@@ -4,3 +4,24 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.99"
+axum = { version = "0.8.4", features = [
+    "http2",
+    "macros",
+    "multipart",
+    "query",
+    "tracing",
+    "ws",
+] }
+dotenvy = "0.15.7"
+diesel = { version = "2.1.3", features = ["postgres", "r2d2"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.143"
+thiserror = "2.0.16"
+tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros", "rt", "tracing", "signal"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = [
+    "serde",
+    "tracing",
+    "chrono",
+] }
