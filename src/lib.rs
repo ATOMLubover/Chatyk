@@ -1,8 +1,10 @@
 mod config;
 mod dto;
-mod error;
 mod handler;
-mod shared;
+mod model;
+mod schema;
+mod service;
+mod util;
 
 use std::net::SocketAddr;
 
@@ -60,7 +62,7 @@ pub async fn serve(config: AppConfig, db_pool: DbPool) -> Result<(), Error> {
 
     tracing::info!("Server is now listening on {}", addr);
 
-    let app_router = handler::get_router();
+    let app_router = handler::get_router(config, db_pool)?;
 
     axum::serve(listener, app_router.into_make_service())
         .with_graceful_shutdown(async {

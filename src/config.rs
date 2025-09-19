@@ -4,6 +4,11 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     pub port: u16,
+
+    pub jwt_encoding_key_env: String,
+    pub jwt_decoding_key_env: String,
+    pub jwt_expiration_hours: i64,
+
     pub database_url_env: String,
 }
 
