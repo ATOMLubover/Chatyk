@@ -44,9 +44,7 @@ pub async fn register_user(pool: &DbPool, request: ReqRegisterUser) -> ServiceRe
         id: user_info.id,
         username: user_info.username,
         email: user_info.email,
-        created_at: user_info
-            .created_at
-            .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
+        created_at: user_info.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
     });
 }
 
@@ -100,9 +98,7 @@ pub async fn login_user(pool: &DbPool, request: ReqUserLogin) -> ServiceResult<R
         id: user_info.id,
         username: user_info.username,
         email: user_info.email,
-        created_at: user_info
-            .created_at
-            .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
+        created_at: user_info.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
     });
 }
 
@@ -173,8 +169,6 @@ pub async fn get_user_by_id(pool: &DbPool, user_id: &str) -> Result<RspUserInfo,
         id: user_info.id,
         username: user_info.username,
         email: user_info.email,
-        created_at: user_info
-            .created_at
-            .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()),
+        created_at: user_info.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
     });
 }

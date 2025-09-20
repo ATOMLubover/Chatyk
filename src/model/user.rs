@@ -20,5 +20,5 @@ pub struct UserInfo {
     pub id: String,
     pub username: String,
     pub email: String,
-    pub created_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }
