@@ -1,106 +1,41 @@
+use axum::Extension;
 use axum::Json;
-use axum::body::Body;
+use axum::extract::Path;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::response::Response;
-use cookie::time::Duration;
-use jsonwebtoken::EncodingKey;
 
-use crate::dto::request::{ReqRegisterUser, ReqUserLogin};
+use crate::dto::ReqPatchUser;
 use crate::handler::middleware::UserToken;
 use crate::handler::{AppError, AppState};
 use crate::service::{self};
-use crate::util::encode_jwt;
 
-fn append_token_cookie(
-    response: &mut Response<Body>,
-    token: UserToken,
-    encoding_key: &EncodingKey,
-    expiration_time: Duration,
-) -> Result<(), AppError> {
-    let token = match encode_jwt(token, &encoding_key).map_err(|err| {
-        tracing::error!("Failed to encode JWT: {:?}", err);
-        AppError::TokenGenerationFailure
-    }) {
-        Ok(t) => t,
-        Err(app_err) => return Err(app_err),
-    };
-
-    if let Err(err) = super::append_cookie(
-        response,
-        "Set-Cookie",
-        &format!("Bearer {}", token),
-        "/",
-        expiration_time,
-    ) {
-        tracing::error!("Failed to append auth cookie: {:?}", err);
-        return Err(AppError::CookieParseError);
-    }
-
-    return Ok(());
-}
-
-pub async fn register_user(
+pub async fn get_user_info_by_id(
     State(state): State<AppState>,
-    Json(payload): Json<ReqRegisterUser>,
+    Path(user_id): Path<String>,
 ) -> impl IntoResponse {
-    tracing::trace!("Register payload: {:?}", payload);
+    tracing::trace!("Get user info for user_id: {}", user_id);
 
-    let result = match service::register_user(&state.db_pool, payload).await {
+    let result = match service::get_user_by_id(&state.db_pool, &user_id).await {
         Ok(user) => user,
         Err(err) => return AppError::from(err).into_response(),
     };
 
-    let user_id = result.id.clone();
-
-    let mut response = (StatusCode::CREATED, Json(result)).into_response();
-
-    // add auth header with JWT
-    if let Err(err) = append_token_cookie(
-        &mut response,
-        UserToken {
-            user_id: user_id.clone(),
-            exp: chrono::Utc::now().timestamp() + state.config.jwt_expiration_hours * 3600,
-        },
-        &EncodingKey::from_secret(state.jwt_encoding_key.as_bytes()),
-        Duration::hours(state.config.jwt_expiration_hours),
-    ) {
-        tracing::error!("Failed to append token cookie: {:?}", err);
-        return AppError::from(err).into_response();
-    }
-
-    return response;
+    return (StatusCode::OK, Json(result)).into_response();
 }
 
-pub async fn login_user(
+/// `patch_user_with_id` allows a user to update their own information.
+/// so the the user_id stored in JWT will be used to identify the user to be updated,
+/// instead of the user_id in the path parameter.
+pub async fn patch_user_with_id(
     State(state): State<AppState>,
-    Json(payload): Json<ReqUserLogin>,
+    Extension(user_token): Extension<UserToken>,
+    Json(payload): Json<ReqPatchUser>,
 ) -> impl IntoResponse {
-    tracing::trace!("Login payload: {:?}", payload);
+    tracing::trace!("Patch user payload: {:?}", payload);
 
-    let result = match service::login_user(&state.db_pool, payload).await {
-        Ok(user) => user,
+    match service::patch_user(&state.db_pool, &user_token.user_id, payload).await {
+        Ok(_) => return StatusCode::NO_CONTENT.into_response(),
         Err(err) => return AppError::from(err).into_response(),
     };
-
-    let user_id = result.id.clone();
-
-    let mut response = (StatusCode::OK, Json(result)).into_response();
-
-    // add auth header with JWT
-    if let Err(err) = append_token_cookie(
-        &mut response,
-        UserToken {
-            user_id: user_id.clone(),
-            exp: chrono::Utc::now().timestamp() + state.config.jwt_expiration_hours * 3600,
-        },
-        &EncodingKey::from_secret(state.jwt_encoding_key.as_bytes()),
-        Duration::hours(state.config.jwt_expiration_hours),
-    ) {
-        tracing::error!("Failed to append token cookie: {:?}", err);
-        return AppError::from(err).into_response();
-    }
-
-    return response;
 }

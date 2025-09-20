@@ -24,3 +24,5 @@ pub enum ServiceError {
     #[error("Database error: {0}")]
     DatabaseError(#[from] diesel::result::Error),
 }
+
+pub type ServiceResult<T> = Result<T, ServiceError>;

@@ -19,9 +19,13 @@ use crate::config::AppConfig;
 type DbPool = diesel::r2d2::Pool<ConnectionManager<PgConnection>>;
 
 pub fn initialize_logger() -> Result<(), Error> {
+    // load .env file, in order to read RUST_LOG env variable
+    dotenvy::dotenv().map_err(|err| anyhow::anyhow!("Failed to load .env file: {err}."))?;
+
     // create a default subscriber that logs to stdout
     // its log level is set by the RUST_LOG env variable
     tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
         .try_init()
         .map_err(|err| anyhow::anyhow!(err))?;
 
@@ -30,7 +34,6 @@ pub fn initialize_logger() -> Result<(), Error> {
 
 pub fn initialize_config() -> Result<AppConfig, Error> {
     let config = AppConfig::try_default_load()?;
-
     return Ok(config);
 }
 
@@ -42,7 +45,7 @@ pub fn initialize_database(config: &AppConfig) -> Result<DbPool, Error> {
     let database_url = std::env::var(&config.database_url_env)
         .map_err(|err| anyhow::anyhow!("Failed to get database url from env: {err}."))?;
 
-    tracing::trace!("Database URL: {database_url}");
+    tracing::trace!("Database URL: {}", database_url);
 
     let manager = ConnectionManager::<PgConnection>::new(database_url);
 
@@ -60,16 +63,20 @@ pub async fn serve(config: AppConfig, db_pool: DbPool) -> Result<(), Error> {
         .await
         .map_err(|err| anyhow::anyhow!("Failed to bind to address {addr}: {err}"))?;
 
-    tracing::info!("Server is now listening on {}", addr);
+    tracing::debug!("Server is now listening on {}", addr);
 
     let app_router = handler::get_router(config, db_pool)?;
 
     axum::serve(listener, app_router.into_make_service())
         .with_graceful_shutdown(async {
+            tracing::debug!("Press CTRL + C to shut down the server gracefully...");
+
             // wait for the CTRL+C signal to shut down the server
             signal::ctrl_c()
                 .await
-                .expect("Failed to install Ctrl+C handler");
+                .expect("Failed to install CTRL + C signal handler");
+
+            tracing::debug!("CTRL + C Signal received, shutting down gracefully...");
         })
         .await
         .map_err(|err| anyhow::anyhow!("Failed to start server on {addr}: {err}"))?;

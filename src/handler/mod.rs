@@ -1,3 +1,4 @@
+mod auth;
 mod middleware;
 mod user;
 
@@ -86,48 +87,33 @@ impl IntoResponse for AppError {
 impl From<ServiceError> for AppError {
     fn from(err: ServiceError) -> Self {
         match err {
-            ServiceError::EmailOrUsernameConflict => {
-                tracing::trace!("Email or username conflict error");
-                AppError::ServiceError(
-                    StatusCode::CONFLICT,
-                    "Email or username already exists".to_string(),
-                )
-            }
+            ServiceError::EmailOrUsernameConflict => AppError::ServiceError(
+                StatusCode::CONFLICT,
+                "Email or username already exists".to_string(),
+            ),
             ServiceError::UserNotFound => {
-                tracing::trace!("User not found error");
                 AppError::ServiceError(StatusCode::NOT_FOUND, "User not found".to_string())
             }
             ServiceError::PasswordMismatch => {
-                tracing::trace!("Password mismatch error");
                 AppError::ServiceError(StatusCode::UNAUTHORIZED, "Password mismatch".to_string())
             }
-            ServiceError::PasswordHashError(err) => {
-                tracing::error!("Password hash error: {:?}", err);
-                AppError::ServiceError(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Unprocessable password".to_string(),
-                )
-            }
-
-            // database / db pool error will only be handled here
-            // so log them as error level
-            ServiceError::DbPoolError(err) => {
-                tracing::error!("Database pool error: {:?}", err);
-                AppError::ServiceError(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Database pool error".to_string(),
-                )
-            }
-            ServiceError::DatabaseError(err) => {
-                tracing::error!("Database error: {:?}", err);
-                AppError::ServiceError(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Database error".to_string(),
-                )
-            }
+            ServiceError::PasswordHashError(_) => AppError::ServiceError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unprocessable password".to_string(),
+            ),
+            ServiceError::DbPoolError(_) => AppError::ServiceError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Database pool error".to_string(),
+            ),
+            ServiceError::DatabaseError(_) => AppError::ServiceError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Database error".to_string(),
+            ),
         }
     }
 }
+
+pub type AppResult<T> = Result<T, AppError>;
 
 pub fn append_cookie(
     response: &mut Response,
@@ -154,10 +140,6 @@ pub fn append_cookie(
     return Ok(());
 }
 
-pub async fn health_check() -> impl IntoResponse {
-    return "OK".to_string();
-}
-
 pub fn get_router(config: AppConfig, db_pool: DbPool) -> Result<Router, Error> {
     dotenvy::dotenv().map_err(|err| anyhow::anyhow!("Failed to load .env file: {err}."))?;
 
@@ -166,17 +148,28 @@ pub fn get_router(config: AppConfig, db_pool: DbPool) -> Result<Router, Error> {
     let jwt_decoding_key = std::env::var(&config.jwt_decoding_key_env)
         .map_err(|err| anyhow::anyhow!("Failed to get JWT decoding key from env: {err}."))?;
 
+    // router for authentication (no auth required)
     let auth_router = Router::new()
-        .route("/register", routing::post(user::register_user))
-        .route("/login", routing::post(user::login_user));
+        .route("/register", routing::post(auth::register_user))
+        .route("/login", routing::post(auth::login_user));
 
-    let api_router = Router::new().layer(axum::middleware::from_fn_with_state(
-        jwt_decoding_key.clone(),
-        middleware::auth_middleware,
-    ));
+    // router for APIs (auth middleware added)
+    let api_router = Router::new()
+        .route(
+            "/users/{:user_id}",
+            routing::get(user::get_user_info_by_id).patch(user::patch_user_with_id),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            jwt_decoding_key.clone(),
+            middleware::auth_middleware,
+        ));
 
-    let router = Router::new()
-        .route("/health_check", routing::get(health_check))
+    // router for entire application
+    let app_router = Router::new()
+        .route(
+            "/health_check",
+            routing::get(async || "Hello from server!\n".to_string()),
+        )
         .nest("/auth", auth_router)
         .nest("/api", api_router)
         .with_state(AppState {
@@ -186,5 +179,5 @@ pub fn get_router(config: AppConfig, db_pool: DbPool) -> Result<Router, Error> {
             jwt_encoding_key,
         });
 
-    return Ok(router);
+    return Ok(app_router);
 }
