@@ -1,7 +1,10 @@
+mod channel;
 mod user;
 
+use anyhow::Result;
 use thiserror::Error;
 
+pub use channel::*;
 pub use user::*;
 
 #[derive(Debug, Error)]
@@ -17,6 +20,18 @@ pub enum ServiceError {
 
     #[error("Unable to process password: {0}")]
     PasswordHashError(#[from] bcrypt::BcryptError),
+
+    #[error("Invalid channel type: {0}")]
+    InvalidChannelType(String),
+
+    #[error("Invalid number of channel members, at least 2 members are required")]
+    InvalidChannelMemberNumber,
+
+    #[error("Failed to create channel")]
+    ChannelCreationFailure,
+
+    #[error("Blocking join error: {0}")]
+    BlockingJoinError(#[from] tokio::task::JoinError),
 
     #[error("Database pool error: {0}")]
     DbPoolError(#[from] r2d2::Error),

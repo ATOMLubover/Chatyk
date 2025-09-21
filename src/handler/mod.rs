@@ -87,28 +87,36 @@ impl IntoResponse for AppError {
 impl From<ServiceError> for AppError {
     fn from(err: ServiceError) -> Self {
         match err {
-            ServiceError::EmailOrUsernameConflict => AppError::ServiceError(
-                StatusCode::CONFLICT,
-                "Email or username already exists".to_string(),
-            ),
+            ServiceError::EmailOrUsernameConflict => {
+                AppError::ServiceError(StatusCode::CONFLICT, err.to_string())
+            }
             ServiceError::UserNotFound => {
-                AppError::ServiceError(StatusCode::NOT_FOUND, "User not found".to_string())
+                AppError::ServiceError(StatusCode::NOT_FOUND, err.to_string())
             }
             ServiceError::PasswordMismatch => {
-                AppError::ServiceError(StatusCode::UNAUTHORIZED, "Password mismatch".to_string())
+                AppError::ServiceError(StatusCode::UNAUTHORIZED, err.to_string())
             }
-            ServiceError::PasswordHashError(_) => AppError::ServiceError(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Unprocessable password".to_string(),
-            ),
-            ServiceError::DbPoolError(_) => AppError::ServiceError(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Database pool error".to_string(),
-            ),
-            ServiceError::DatabaseError(_) => AppError::ServiceError(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Database error".to_string(),
-            ),
+            ServiceError::PasswordHashError(_) => {
+                AppError::ServiceError(StatusCode::BAD_REQUEST, err.to_string())
+            }
+            ServiceError::InvalidChannelType(msg) => {
+                AppError::ServiceError(StatusCode::BAD_REQUEST, msg)
+            }
+            ServiceError::InvalidChannelMemberNumber => {
+                AppError::ServiceError(StatusCode::BAD_REQUEST, err.to_string())
+            }
+            ServiceError::ChannelCreationFailure => {
+                AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            }
+            ServiceError::BlockingJoinError(_) => {
+                AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            }
+            ServiceError::DbPoolError(_) => {
+                AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            }
+            ServiceError::DatabaseError(_) => {
+                AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            }
         }
     }
 }

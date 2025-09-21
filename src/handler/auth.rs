@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::Json;
 use axum::body::Body;
 use axum::extract::State;
@@ -48,7 +50,7 @@ pub async fn register_user(
 ) -> impl IntoResponse {
     tracing::trace!("Register payload: {:?}", payload);
 
-    let result = match service::register_user(&state.db_pool, payload).await {
+    let result = match service::register_user(Arc::clone(&state.db_pool), payload).await {
         Ok(user) => user,
         Err(err) => return AppError::from(err).into_response(),
     };
@@ -80,7 +82,7 @@ pub async fn login_user(
 ) -> impl IntoResponse {
     tracing::trace!("Login payload: {:?}", payload);
 
-    let result = match service::login_user(&state.db_pool, payload).await {
+    let result = match service::login_user(Arc::clone(&state.db_pool), payload).await {
         Ok(user) => user,
         Err(err) => return AppError::from(err).into_response(),
     };

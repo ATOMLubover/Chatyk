@@ -1,20 +1,22 @@
 // @generated automatically by Diesel CLI.
 
-pub mod sql_types {
-    #[derive(diesel::query_builder::QueryId, Clone, diesel::sql_types::SqlType)]
-    #[diesel(postgres_type(name = "channel_type"))]
-    pub struct ChannelType;
+diesel::table! {
+    channel_member_tbl (channel_id, user_id) {
+        #[max_length = 255]
+        channel_id -> Varchar,
+        #[max_length = 255]
+        user_id -> Varchar,
+        joined_at -> Timestamptz,
+    }
 }
 
 diesel::table! {
-    use diesel::sql_types::*;
-    use super::sql_types::ChannelType;
-
     channel_tbl (id) {
         #[max_length = 255]
         id -> Varchar,
         chan_name -> Nullable<Text>,
-        channel_type -> ChannelType,
+        #[max_length = 63]
+        channel_type -> Varchar,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
     }
@@ -34,4 +36,7 @@ diesel::table! {
     }
 }
 
-diesel::allow_tables_to_appear_in_same_query!(channel_tbl, user_tbl,);
+diesel::joinable!(channel_member_tbl -> channel_tbl (channel_id));
+diesel::joinable!(channel_member_tbl -> user_tbl (user_id));
+
+diesel::allow_tables_to_appear_in_same_query!(channel_member_tbl, channel_tbl, user_tbl,);

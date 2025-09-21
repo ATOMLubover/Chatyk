@@ -7,6 +7,7 @@ mod service;
 mod util;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::{Error, Result};
 use diesel::PgConnection;
@@ -16,7 +17,7 @@ use tokio::signal;
 
 use crate::config::AppConfig;
 
-type DbPool = diesel::r2d2::Pool<ConnectionManager<PgConnection>>;
+type DbPool = Arc<Pool<ConnectionManager<PgConnection>>>;
 
 pub fn initialize_logger() -> Result<(), Error> {
     // load .env file, in order to read RUST_LOG env variable
@@ -53,7 +54,7 @@ pub fn initialize_database(config: &AppConfig) -> Result<DbPool, Error> {
         .build(manager)
         .map_err(|err| anyhow::anyhow!(err))?;
 
-    return Ok(pool);
+    return Ok(Arc::new(pool));
 }
 
 pub async fn serve(config: AppConfig, db_pool: DbPool) -> Result<(), Error> {
