@@ -36,8 +36,8 @@ pub async fn get_channel_list(
     return match service::list_user_channels(
         Arc::clone(&state.db_pool),
         user_token.user_id,
-        params.limit.unwrap_or(20),
         params.offset.unwrap_or(0),
+        params.limit.unwrap_or(20),
     )
     .await
     {
@@ -60,9 +60,15 @@ pub async fn get_channel_member_list(
 
 pub async fn join_channel(
     State(state): State<AppState>,
+    Extension(user_token): Extension<UserToken>,
     Json(payload): Json<ReqAddUserToChannel>,
 ) -> impl IntoResponse {
     tracing::trace!("Join channel payload: {:?}", payload);
+
+    if payload.user_id != user_token.user_id {
+        // a user can only join a channel with his/her own user_id
+        return StatusCode::FORBIDDEN.into_response();
+    }
 
     return match service::add_user_to_channel(Arc::clone(&state.db_pool), payload).await {
         Ok(_) => (StatusCode::NO_CONTENT).into_response(),
@@ -72,9 +78,15 @@ pub async fn join_channel(
 
 pub async fn quit_channel(
     State(state): State<AppState>,
+    Extension(user_token): Extension<UserToken>,
     Json(payload): Json<ReqRemoveUserFromChannel>,
 ) -> impl IntoResponse {
     tracing::trace!("Quit channel payload: {:?}", payload);
+
+    if payload.user_id != user_token.user_id {
+        // a user can only quit a channel he/she is in
+        return StatusCode::FORBIDDEN.into_response();
+    }
 
     return match service::remove_user_from_channel(Arc::clone(&state.db_pool), payload).await {
         Ok(_) => (StatusCode::NO_CONTENT).into_response(),

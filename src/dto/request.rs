@@ -21,19 +21,13 @@ pub struct ReqPatchUser {
     pub password: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct ReqChannelMember {
-    pub member_id: String,
-    pub member_name: String,
-}
-
 /// `ReqCreateChannel` is used to create a new channel.
 /// since a channel should be composed of at least two members,
 /// member_ids, which is a vec, is a required field.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReqCreateChannel {
-    pub members: Vec<ReqChannelMember>,
-    pub chan_name: Option<String>,
+    pub member_ids: Vec<String>,
+    pub channel_name: Option<String>,
     pub channel_type: String,
 }
 

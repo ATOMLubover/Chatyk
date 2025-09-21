@@ -15,7 +15,7 @@ pub async fn create_channel(pool: DbPool, req: ReqCreateChannel) -> ServiceResul
     use crate::schema::channel_member_tbl;
     use crate::schema::channel_tbl;
 
-    if req.members.len() < 2 {
+    if req.member_ids.len() < 2 {
         return Err(ServiceError::InvalidChannelMemberNumber);
     }
 
@@ -27,16 +27,8 @@ pub async fn create_channel(pool: DbPool, req: ReqCreateChannel) -> ServiceResul
             // create a new channel first
             let channel_id = util::generate_id();
 
-            let channel_name = match req.chan_name {
+            let channel_name = match req.channel_name {
                 Some(name) => name,
-                _ if req.members.len() == 2 => {
-                    // a default channel name is composed of the two members' names
-                    format!(
-                        "{}, {}'s channel",
-                        req.members[0].member_name.clone(),
-                        req.members[1].member_name.clone()
-                    )
-                }
                 _ => format!("Unnamed group channel # {}", &channel_id[..8]),
             };
 
@@ -52,18 +44,18 @@ pub async fn create_channel(pool: DbPool, req: ReqCreateChannel) -> ServiceResul
                 created_at: Utc::now(),
             };
 
-            let result = diesel::insert_into(channel_tbl::table)
+            let new_channel_id = diesel::insert_into(channel_tbl::table)
                 .values(&new_channel)
                 .returning(channel_tbl::id)
                 .get_result::<String>(conn)?;
 
             // then add members to the channel
             let members = req
-                .members
+                .member_ids
                 .iter()
-                .map(|m| NewChannelMember {
-                    channel_id: result.clone(),
-                    user_id: m.member_id.clone(),
+                .map(|member_id| NewChannelMember {
+                    channel_id: new_channel_id.clone(),
+                    user_id: member_id.to_string(),
                     joined_at: Utc::now(),
                 })
                 .collect::<Vec<_>>();
