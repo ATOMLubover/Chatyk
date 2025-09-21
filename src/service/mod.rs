@@ -21,8 +21,8 @@ pub enum ServiceError {
     #[error("Unable to process password: {0}")]
     PasswordHashError(#[from] bcrypt::BcryptError),
 
-    #[error("Invalid channel type: {0}")]
-    InvalidChannelType(String),
+    #[error("Invalid channel type")]
+    InvalidChannelType,
 
     #[error("Invalid number of channel members, at least 2 members are required")]
     InvalidChannelMemberNumber,
@@ -30,6 +30,14 @@ pub enum ServiceError {
     #[error("Failed to create channel")]
     ChannelCreationFailure,
 
+    #[error("User is already in the channel")]
+    UserAlreadyInChannel,
+
+    #[error("User is not in the channel")]
+    UserNotInChannel,
+
+    #[error("Channel does not exist")]
+    NonexistingChannel,
     #[error("Blocking join error: {0}")]
     BlockingJoinError(#[from] tokio::task::JoinError),
 

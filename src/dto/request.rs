@@ -38,6 +38,12 @@ pub struct ReqCreateChannel {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct GetChannelListParams {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct ReqAddUserToChannel {
     pub user_id: String,
     pub channel_id: String,

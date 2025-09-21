@@ -1,13 +1,13 @@
 mod auth;
+mod channel;
 mod middleware;
 mod user;
 
 use anyhow::{Error, Result};
 use axum::Json;
 use axum::Router;
-use axum::http::HeaderValue;
-use axum::http::StatusCode;
 use axum::http::header::InvalidHeaderValue;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing;
 use cookie::time::Duration;
@@ -99,14 +99,23 @@ impl From<ServiceError> for AppError {
             ServiceError::PasswordHashError(_) => {
                 AppError::ServiceError(StatusCode::BAD_REQUEST, err.to_string())
             }
-            ServiceError::InvalidChannelType(msg) => {
-                AppError::ServiceError(StatusCode::BAD_REQUEST, msg)
+            ServiceError::InvalidChannelType => {
+                AppError::ServiceError(StatusCode::BAD_REQUEST, err.to_string())
             }
             ServiceError::InvalidChannelMemberNumber => {
                 AppError::ServiceError(StatusCode::BAD_REQUEST, err.to_string())
             }
             ServiceError::ChannelCreationFailure => {
                 AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            }
+            ServiceError::NonexistingChannel => {
+                AppError::ServiceError(StatusCode::NOT_FOUND, err.to_string())
+            }
+            ServiceError::UserAlreadyInChannel => {
+                AppError::ServiceError(StatusCode::CONFLICT, err.to_string())
+            }
+            ServiceError::UserNotInChannel => {
+                AppError::ServiceError(StatusCode::BAD_REQUEST, err.to_string())
             }
             ServiceError::BlockingJoinError(_) => {
                 AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
@@ -161,12 +170,29 @@ pub fn get_router(config: AppConfig, db_pool: DbPool) -> Result<Router, Error> {
         .route("/register", routing::post(auth::register_user))
         .route("/login", routing::post(auth::login_user));
 
+    // router for users
+    let user_router = Router::new().route(
+        "/{:user_id}",
+        routing::get(user::get_user_info_by_id).patch(user::patch_user_with_id),
+    );
+
+    // router for channels
+    let channel_router = Router::new()
+        .route(
+            "/",
+            routing::get(channel::get_channel_list).post(channel::create_channel),
+        )
+        .route(
+            "/{:channel_id}/members",
+            routing::get(channel::get_channel_member_list)
+                .post(channel::join_channel)
+                .delete(channel::quit_channel),
+        );
+
     // router for APIs (auth middleware added)
     let api_router = Router::new()
-        .route(
-            "/users/{:user_id}",
-            routing::get(user::get_user_info_by_id).patch(user::patch_user_with_id),
-        )
+        .nest("/users", user_router)
+        .nest("/channels", channel_router)
         .layer(axum::middleware::from_fn_with_state(
             jwt_decoding_key.clone(),
             middleware::auth_middleware,

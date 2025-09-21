@@ -1,11 +1,15 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use tokio::task;
 
-use crate::dto::{ReqAddUserToChannel, ReqCreateChannel, ReqRemoveUserFromChannel, RspChannelInfo};
-use crate::model::{ChannelInfo, NewChannel, NewChannelMember, user};
+use crate::DbPool;
+use crate::dto::{
+    ReqAddUserToChannel, ReqCreateChannel, ReqRemoveUserFromChannel, RspChannelInfo,
+    RspChannelMember,
+};
+use crate::model::{ChannelInfo, NewChannel, NewChannelMember, UserInfo};
 use crate::service::{ServiceError, ServiceResult};
-use crate::{DbPool, util};
+use crate::util;
 
 pub async fn create_channel(pool: DbPool, req: ReqCreateChannel) -> ServiceResult<()> {
     use crate::schema::channel_member_tbl;
@@ -43,7 +47,7 @@ pub async fn create_channel(pool: DbPool, req: ReqCreateChannel) -> ServiceResul
                 channel_type: match req.channel_type.as_str() {
                     "private" => "private".to_string(),
                     "public" => "public".to_string(),
-                    ty => return Err(ServiceError::InvalidChannelType(ty.to_string())),
+                    _ => return Err(ServiceError::InvalidChannelType),
                 },
                 created_at: Utc::now(),
             };
@@ -60,6 +64,7 @@ pub async fn create_channel(pool: DbPool, req: ReqCreateChannel) -> ServiceResul
                 .map(|m| NewChannelMember {
                     channel_id: result.clone(),
                     user_id: m.member_id.clone(),
+                    joined_at: Utc::now(),
                 })
                 .collect::<Vec<_>>();
 
@@ -77,9 +82,9 @@ pub async fn create_channel(pool: DbPool, req: ReqCreateChannel) -> ServiceResul
 
 pub async fn list_user_channels(
     pool: DbPool,
-    user_id: &str,
-    offset: i32,
-    limit: i32,
+    user_id: String,
+    offset: i64,
+    limit: i64,
 ) -> ServiceResult<Vec<RspChannelInfo>> {
     use crate::schema::channel_member_tbl;
     use crate::schema::channel_tbl;
@@ -96,8 +101,8 @@ pub async fn list_user_channels(
                 channel_member_tbl::table.on(channel_tbl::id.eq(channel_member_tbl::channel_id)),
             )
             .select(ChannelInfo::as_select())
-            .offset(offset as i64)
-            .limit(limit as i64)
+            .offset(offset)
+            .limit(limit)
             .load::<ChannelInfo>(conn)?;
 
         return Ok(results
@@ -114,13 +119,92 @@ pub async fn list_user_channels(
     .await?;
 }
 
-pub async fn add_user_to_channel(pool: &DbPool, req: ReqAddUserToChannel) -> ServiceResult<()> {
-    todo!()
+pub async fn list_channel_members(
+    pool: DbPool,
+    channel_id: String,
+) -> ServiceResult<Vec<RspChannelMember>> {
+    use crate::schema::channel_member_tbl;
+    use crate::schema::user_tbl;
+
+    return task::spawn_blocking(move || {
+        let conn = &mut pool.get()?;
+
+        let results = channel_member_tbl::table
+            .filter(channel_member_tbl::channel_id.eq(&channel_id))
+            .inner_join(user_tbl::table.on(channel_member_tbl::user_id.eq(user_tbl::id)))
+            .select((UserInfo::as_select(), channel_member_tbl::joined_at))
+            .load::<(UserInfo, DateTime<Utc>)>(conn)?;
+
+        return Ok(results
+            .into_iter()
+            .map(|tuple| RspChannelMember {
+                user_id: tuple.0.id,
+                username: tuple.0.username,
+                user_email: tuple.0.email,
+                channel_id: channel_id.to_string(),
+                joined_at: tuple.1.format("%Y-%m-%d %H:%M:%S").to_string(),
+            })
+            .collect::<Vec<_>>());
+    })
+    .await?;
 }
 
+pub async fn add_user_to_channel(pool: DbPool, req: ReqAddUserToChannel) -> ServiceResult<()> {
+    use crate::schema::channel_member_tbl::dsl::*;
+    use diesel::result::DatabaseErrorKind;
+    use diesel::result::Error::DatabaseError;
+
+    return task::spawn_blocking(move || {
+        let conn = &mut pool.get()?;
+
+        let new_member = NewChannelMember {
+            channel_id: req.channel_id,
+            user_id: req.user_id,
+            joined_at: Utc::now(),
+        };
+
+        match diesel::insert_into(channel_member_tbl)
+            .values(&new_member)
+            .execute(conn)
+        {
+            Ok(_) => Ok(()),
+            Err(err) => match err {
+                // FIXME: user foreign key may be violated as well, but that rarely happens
+                DatabaseError(DatabaseErrorKind::ForeignKeyViolation, _) => {
+                    Err(ServiceError::NonexistingChannel)
+                }
+                DatabaseError(DatabaseErrorKind::UniqueViolation, _) => {
+                    Err(ServiceError::UserAlreadyInChannel)
+                }
+                _ => Err(ServiceError::DatabaseError(err)),
+            },
+        }
+    })
+    .await?;
+}
+
+/// `remove_user_from_channel` removes a user from a channel
+/// If the user is not in the channel, returns `ServiceError::UserNotInChannel`,
+/// but the function is idempotent
 pub async fn remove_user_from_channel(
-    pool: &DbPool,
+    pool: DbPool,
     req: ReqRemoveUserFromChannel,
 ) -> ServiceResult<()> {
-    todo!()
+    use crate::schema::channel_member_tbl::dsl::*;
+
+    return task::spawn_blocking(move || {
+        let conn = &mut pool.get()?;
+
+        return match diesel::delete(
+            channel_member_tbl
+                .filter(channel_id.eq(&req.channel_id))
+                .filter(user_id.eq(&req.user_id)),
+        )
+        .execute(conn)?
+        {
+            rows if rows == 0 => Err(ServiceError::UserNotInChannel),
+            _ => Ok(()),
+        };
+    })
+    .await?;
 }

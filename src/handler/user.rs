@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use axum::Extension;
 use axum::Json;
-use axum::extract::Path;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 
@@ -18,12 +17,10 @@ pub async fn get_user_info_by_id(
 ) -> impl IntoResponse {
     tracing::trace!("Get user info for user_id: {}", user_id);
 
-    let result = match service::get_user_by_id(Arc::clone(&state.db_pool), user_id).await {
-        Ok(user) => user,
+    return match service::get_user_by_id(Arc::clone(&state.db_pool), user_id).await {
+        Ok(user) => (StatusCode::OK, Json(user)).into_response(),
         Err(err) => return AppError::from(err).into_response(),
     };
-
-    return (StatusCode::OK, Json(result)).into_response();
 }
 
 /// `patch_user_with_id` allows a user to update their own information
