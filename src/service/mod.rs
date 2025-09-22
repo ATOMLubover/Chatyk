@@ -1,10 +1,14 @@
 mod channel;
+mod message;
+mod resource;
 mod user;
 
 use anyhow::Result;
 use thiserror::Error;
 
 pub use channel::*;
+pub use message::*;
+pub use resource::*;
 pub use user::*;
 
 #[derive(Debug, Error)]
@@ -38,8 +42,15 @@ pub enum ServiceError {
 
     #[error("Channel does not exist")]
     NonexistingChannel,
+
     #[error("Blocking join error: {0}")]
     BlockingJoinError(#[from] tokio::task::JoinError),
+
+    #[error("Std IO error: {0}")]
+    StdIoError(#[from] std::io::Error),
+
+    #[error("Resource upload error: {0}")]
+    ResourceUploadError(String),
 
     #[error("Database pool error: {0}")]
     DbPoolError(#[from] r2d2::Error),

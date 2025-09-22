@@ -1,7 +1,7 @@
 -- create channel table
 CREATE TABLE IF NOT EXISTS channel_tbl (
     id VARCHAR(255) PRIMARY KEY,
-    chan_name TEXT,
+    title TEXT NOT NULL,
     -- private: p2p chat between two users
     -- group: group chat with multiple users
     channel_type VARCHAR(63) NOT NULL,

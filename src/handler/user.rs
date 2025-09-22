@@ -1,26 +1,28 @@
 use std::sync::Arc;
 
-use axum::Extension;
-use axum::Json;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::{
+    Extension, Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 
-use crate::dto::ReqPatchUser;
-use crate::handler::middleware::UserToken;
-use crate::handler::{AppError, AppState};
-use crate::service::{self};
+use crate::{
+    dto::ReqPatchUser,
+    handler::middleware::UserToken,
+    handler::{AppError, AppResult, AppState},
+    service,
+};
 
 pub async fn get_user_info_by_id(
     State(state): State<AppState>,
     Path(user_id): Path<String>,
-) -> impl IntoResponse {
+) -> AppResult<impl IntoResponse> {
     tracing::trace!("Get user info for user_id: {}", user_id);
 
-    return match service::get_user_by_id(Arc::clone(&state.db_pool), user_id).await {
-        Ok(user) => (StatusCode::OK, Json(user)).into_response(),
-        Err(err) => return AppError::from(err).into_response(),
-    };
+    let result = service::get_user_by_id(Arc::clone(&state.db_pool), user_id).await?;
+
+    return Ok((StatusCode::OK, Json(result)));
 }
 
 /// `patch_user_with_id` allows a user to update their own information
@@ -30,20 +32,18 @@ pub async fn patch_user_with_id(
     State(state): State<AppState>,
     Extension(user_token): Extension<UserToken>,
     Json(payload): Json<ReqPatchUser>,
-) -> impl IntoResponse {
+) -> AppResult<impl IntoResponse> {
     tracing::trace!("Patch user payload: {:?}", payload);
 
     if user_token.user_id != payload.user_id {
         // user can only update their own information
-        return AppError::ServiceError(
+        return Err(AppError::ServiceError(
             StatusCode::FORBIDDEN,
             "Cannot update other user's information".to_string(),
-        )
-        .into_response();
+        ));
     }
 
-    match service::patch_user(Arc::clone(&state.db_pool), payload).await {
-        Ok(_) => return StatusCode::NO_CONTENT.into_response(),
-        Err(err) => return AppError::from(err).into_response(),
-    };
+    service::patch_user(Arc::clone(&state.db_pool), payload).await?;
+
+    return Ok(StatusCode::NO_CONTENT);
 }

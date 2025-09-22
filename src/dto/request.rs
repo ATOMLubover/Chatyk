@@ -32,12 +32,6 @@ pub struct ReqCreateChannel {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct GetChannelListParams {
-    pub limit: Option<i64>,
-    pub offset: Option<i64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct ReqAddUserToChannel {
     pub user_id: String,
     pub channel_id: String,
@@ -47,4 +41,11 @@ pub struct ReqAddUserToChannel {
 pub struct ReqRemoveUserFromChannel {
     pub user_id: String,
     pub channel_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReqSendMessage {
+    pub sender_id: String,
+    pub channel_id: String,
+    pub content: String,
 }

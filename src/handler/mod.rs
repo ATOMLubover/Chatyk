@@ -1,30 +1,29 @@
 mod auth;
 mod channel;
+mod message;
 mod middleware;
+mod resource;
 mod user;
 
 use anyhow::{Error, Result};
-use axum::Json;
-use axum::Router;
-use axum::http::header::InvalidHeaderValue;
-use axum::http::{HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
-use axum::routing;
+use axum::{
+    Json, Router,
+    http::header::InvalidHeaderValue,
+    http::{HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
+    routing,
+};
 use cookie::time::Duration;
 use thiserror::Error;
 
-use crate::dto::ErrorResponse;
-
-use crate::DbPool;
-use crate::config::AppConfig;
-use crate::service::ServiceError;
+use crate::{DbPool, config::AppConfig, dto::ErrorResponse, service::ServiceError};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct AppState {
     config: AppConfig,
     db_pool: DbPool,
     jwt_encoding_key: String,
-    #[allow(dead_code)]
     jwt_decoding_key: String,
 }
 
@@ -37,7 +36,10 @@ pub enum AppError {
     TokenGenerationFailure,
 
     #[error("Failed to parse cookie")]
-    CookieParseError,
+    CookieAppendError,
+
+    #[error("Failed to parse multipart form data: {0}")]
+    MultiPartParseError(#[from] axum::extract::multipart::MultipartError),
 
     #[allow(dead_code)]
     #[error("Unknown error: {0}")]
@@ -49,7 +51,8 @@ impl Into<StatusCode> for AppError {
         match self {
             AppError::ServiceError(status, _) => status,
             AppError::TokenGenerationFailure => StatusCode::INTERNAL_SERVER_ERROR,
-            AppError::CookieParseError => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::CookieAppendError => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::MultiPartParseError(_) => StatusCode::BAD_REQUEST,
             AppError::UnknownError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -60,14 +63,24 @@ impl IntoResponse for AppError {
         tracing::trace!("AppError into response: {:?}", self);
 
         let (status, msg) = match self {
-            AppError::ServiceError(status, msg) => (status, msg),
+            AppError::ServiceError(status, msg) => match status {
+                StatusCode::INTERNAL_SERVER_ERROR => {
+                    // we do not want to expose internal error details to clients
+                    (status, "Internal server error occuerrd.".to_string())
+                }
+                _ => (status, msg),
+            },
             AppError::TokenGenerationFailure => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to generate authentication token.".to_string(),
             ),
-            AppError::CookieParseError => (
+            AppError::CookieAppendError => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to parse cookie.".to_string(),
+            ),
+            AppError::MultiPartParseError(_) => (
+                StatusCode::BAD_REQUEST,
+                "Failed to parse multipart form data: {}".to_string(),
             ),
             AppError::UnknownError(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -86,6 +99,7 @@ impl IntoResponse for AppError {
 
 impl From<ServiceError> for AppError {
     fn from(err: ServiceError) -> Self {
+        // TODO: delete err.to_string() calls in 500
         match err {
             ServiceError::EmailOrUsernameConflict => {
                 AppError::ServiceError(StatusCode::CONFLICT, err.to_string())
@@ -118,6 +132,12 @@ impl From<ServiceError> for AppError {
                 AppError::ServiceError(StatusCode::BAD_REQUEST, err.to_string())
             }
             ServiceError::BlockingJoinError(_) => {
+                AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            }
+            ServiceError::StdIoError(_) => {
+                AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            }
+            ServiceError::ResourceUploadError(_) => {
                 AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
             }
             ServiceError::DbPoolError(_) => {
@@ -187,12 +207,20 @@ pub fn get_router(config: AppConfig, db_pool: DbPool) -> Result<Router, Error> {
             routing::get(channel::get_channel_member_list)
                 .post(channel::join_channel)
                 .delete(channel::quit_channel),
+        )
+        .route(
+            "/{:channel_id}/messages",
+            routing::get(message::get_message_list).post(message::send_message),
         );
+
+    // router for resources
+    let resource_router = Router::new().route("/upload", routing::post(resource::upload_resource));
 
     // router for APIs (auth middleware added)
     let api_router = Router::new()
         .nest("/users", user_router)
         .nest("/channels", channel_router)
+        .nest("/resources", resource_router)
         .layer(axum::middleware::from_fn_with_state(
             jwt_decoding_key.clone(),
             middleware::auth_middleware,

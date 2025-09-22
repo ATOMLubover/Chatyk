@@ -1,20 +1,22 @@
 use std::sync::Arc;
 
-use axum::Json;
-use axum::body::Body;
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
-use axum::response::Response;
+use axum::{
+    Json,
+    body::Body,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use cookie::time::Duration;
 use jsonwebtoken::EncodingKey;
 
-use crate::dto::request::{ReqRegisterUser, ReqUserLogin};
-use crate::handler::AppResult;
 use crate::handler::middleware::UserToken;
-use crate::handler::{AppError, AppState};
-use crate::service::{self};
-use crate::util::encode_jwt;
+use crate::{
+    dto::{ReqRegisterUser, ReqUserLogin},
+    handler::{AppError, AppResult, AppState},
+    service,
+    util::encode_jwt,
+};
 
 fn append_token_cookie(
     response: &mut Response<Body>,
@@ -30,16 +32,17 @@ fn append_token_cookie(
         Err(app_err) => return Err(app_err),
     };
 
-    if let Err(err) = super::append_cookie(
+    super::append_cookie(
         response,
         "Set-Cookie",
         &format!("Bearer {}", token),
         "/",
         expiration_time,
-    ) {
-        tracing::error!("Failed to append auth cookie: {:?}", err);
-        return Err(AppError::CookieParseError);
-    }
+    )
+    .map_err(|err| {
+        tracing::error!("Failed to append cookie: {:?}", err);
+        return AppError::CookieAppendError;
+    })?;
 
     return Ok(());
 }
@@ -47,20 +50,17 @@ fn append_token_cookie(
 pub async fn register_user(
     State(state): State<AppState>,
     Json(payload): Json<ReqRegisterUser>,
-) -> impl IntoResponse {
+) -> AppResult<impl IntoResponse> {
     tracing::trace!("Register payload: {:?}", payload);
 
-    let result = match service::register_user(Arc::clone(&state.db_pool), payload).await {
-        Ok(user) => user,
-        Err(err) => return AppError::from(err).into_response(),
-    };
+    let result = service::register_user(Arc::clone(&state.db_pool), payload).await?;
 
     let user_id = result.id.clone();
 
     let mut response = (StatusCode::CREATED, Json(result)).into_response();
 
     // add auth header with JWT
-    if let Err(err) = append_token_cookie(
+    let response = append_token_cookie(
         &mut response,
         UserToken {
             user_id: user_id.clone(),
@@ -68,31 +68,29 @@ pub async fn register_user(
         },
         &EncodingKey::from_secret(state.jwt_encoding_key.as_bytes()),
         Duration::hours(state.config.jwt_expiration_hours),
-    ) {
+    )
+    .map_err(|err| {
         tracing::error!("Failed to append token cookie: {:?}", err);
-        return AppError::from(err).into_response();
-    }
+        return AppError::from(err);
+    })?;
 
-    return response;
+    return Ok(response);
 }
 
 pub async fn login_user(
     State(state): State<AppState>,
     Json(payload): Json<ReqUserLogin>,
-) -> impl IntoResponse {
+) -> AppResult<impl IntoResponse> {
     tracing::trace!("Login payload: {:?}", payload);
 
-    let result = match service::login_user(Arc::clone(&state.db_pool), payload).await {
-        Ok(user) => user,
-        Err(err) => return AppError::from(err).into_response(),
-    };
+    let result = service::login_user(Arc::clone(&state.db_pool), payload).await?;
 
     let user_id = result.id.clone();
 
     let mut response = (StatusCode::OK, Json(result)).into_response();
 
     // add auth header with JWT
-    if let Err(err) = append_token_cookie(
+    let response = append_token_cookie(
         &mut response,
         UserToken {
             user_id: user_id.clone(),
@@ -100,10 +98,11 @@ pub async fn login_user(
         },
         &EncodingKey::from_secret(state.jwt_encoding_key.as_bytes()),
         Duration::hours(state.config.jwt_expiration_hours),
-    ) {
+    )
+    .map_err(|err| {
         tracing::error!("Failed to append token cookie: {:?}", err);
-        return AppError::from(err).into_response();
-    }
+        return AppError::from(err);
+    })?;
 
-    return response;
+    return Ok(response);
 }

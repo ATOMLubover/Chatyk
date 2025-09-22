@@ -10,6 +10,9 @@ pub struct AppConfig {
     pub jwt_expiration_hours: i64,
 
     pub database_url_env: String,
+
+    pub upload_dir: String,
+    pub resource_base_url: String,
 }
 
 impl AppConfig {

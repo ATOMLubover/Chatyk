@@ -34,7 +34,7 @@ pub async fn create_channel(pool: DbPool, req: ReqCreateChannel) -> ServiceResul
 
             let new_channel = NewChannel {
                 id: channel_id,
-                chan_name: channel_name,
+                title: channel_name,
                 // FIXME: validate channel type, as now we only do not use ENUM
                 channel_type: match req.channel_type.as_str() {
                     "private" => "private".to_string(),
@@ -101,7 +101,7 @@ pub async fn list_user_channels(
             .into_iter()
             .map(|c| RspChannelInfo {
                 id: c.id,
-                chan_name: c.chan_name,
+                chan_name: c.title,
                 channel_type: c.channel_type,
                 created_at: c.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
                 updated_at: c.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -184,6 +184,7 @@ pub async fn remove_user_from_channel(
 ) -> ServiceResult<()> {
     use crate::schema::channel_member_tbl::dsl::*;
 
+    // TODO: delete the channel if there is no member in it anymore
     return task::spawn_blocking(move || {
         let conn = &mut pool.get()?;
 

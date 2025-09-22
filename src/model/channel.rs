@@ -7,7 +7,7 @@ use crate::schema::channel_tbl;
 #[diesel(table_name = channel_tbl)]
 pub struct NewChannel {
     pub id: String,
-    pub chan_name: String,
+    pub title: String,
     pub channel_type: String,
     pub created_at: DateTime<Utc>,
 }
@@ -17,7 +17,7 @@ pub struct NewChannel {
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct ChannelInfo {
     pub id: String,
-    pub chan_name: Option<String>,
+    pub title: String,
     pub channel_type: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
