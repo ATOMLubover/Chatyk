@@ -25,7 +25,12 @@ pub async fn send_message(
         return Ok(StatusCode::FORBIDDEN);
     }
 
-    service::create_message(Arc::clone(&state.db_pool), payload).await?;
+    service::create_message(
+        Arc::clone(&state.db_pool),
+        Arc::clone(&state.cache_pool),
+        payload,
+    )
+    .await?;
 
     return Ok(StatusCode::CREATED);
 }

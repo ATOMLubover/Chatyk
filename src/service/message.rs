@@ -1,41 +1,74 @@
 use chrono::Utc;
 use diesel::prelude::*;
+use redis::{AsyncCommands, Commands};
 use tokio::task;
 
 use crate::{
-    DbPool,
+    CachePool, DbPool,
+    cache::CacheError,
     dto::{ReqSendMessage, RspMessage},
     model::{MessageInfo, NewMessage},
-    service::{ServiceError, ServiceResult},
+    service::{self, ServiceError, ServiceResult},
     util,
 };
 
-pub async fn create_message(pool: DbPool, req: ReqSendMessage) -> ServiceResult<()> {
+pub async fn create_message(
+    pool: DbPool,
+    cache: CachePool,
+    req: ReqSendMessage,
+) -> ServiceResult<()> {
     use crate::schema::message_tbl::dsl::*;
 
-    return task::spawn_blocking(move || {
+    let req_clone = req.clone();
+
+    // insert the new message into database first
+    task::spawn_blocking::<_, ServiceResult<()>>(move || {
         let msg_id = util::generate_id();
 
         // TODO: validate the resources in the content
         let new_message = NewMessage {
             id: msg_id,
-            channel_id: req.channel_id,
-            sender_id: req.sender_id,
-            content: req.content,
+            channel_id: req_clone.channel_id.clone(),
+            sender_id: req_clone.sender_id,
+            content: req_clone.content,
             created_at: Utc::now(),
         };
 
         let conn = &mut pool.get()?;
 
-        return match diesel::insert_into(message_tbl)
-            .values(&new_message)
-            .execute(conn)
-        {
-            Ok(_) => Ok(()),
-            Err(err) => Err(ServiceError::DatabaseError(err)),
-        };
+        // we need a strong consistency with cache here, so we use a transaction
+
+        return conn.transaction(|conn| {
+            diesel::insert_into(message_tbl)
+                .values(&new_message.clone())
+                .execute(conn)?;
+
+            let msg_val = serde_json::to_string(&RspMessage {
+                id: new_message.id,
+                channel_id: new_message.channel_id.clone(),
+                sender_id: new_message.sender_id,
+                content: new_message.content,
+                created_at: new_message
+                    .created_at
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string(),
+            })?;
+
+            let channel_key = format!("channel:{}:recent_messages", new_message.channel_id);
+
+            let cache_conn = &mut cache.get_sync_conn()?;
+
+            // FIXME: what if lpush fails?
+            cache_conn
+                .lpush::<_, _, ()>(channel_key, msg_val)
+                .map_err(|err| CacheError::from(err))?;
+
+            return Ok(());
+        });
     })
-    .await?;
+    .await??;
+
+    todo!()
 }
 
 pub async fn list_channel_messages(
@@ -70,4 +103,187 @@ pub async fn list_channel_messages(
         return Ok(rsp_msgs);
     })
     .await?;
+}
+
+/// a shortcut to list recent messages across all channels
+/// this will be useful for cache acceleration
+pub async fn list_channel_recent_messages(
+    pool: DbPool,
+    cache: CachePool,
+    channel_id: String,
+    limit: i64,
+) -> ServiceResult<Vec<RspMessage>> {
+    let conn = &mut cache.get_async_conn().await?;
+
+    let channel_key = format!("channel:{}:recent_messages", channel_id);
+
+    let cache_msgs = conn
+        .lrange::<_, Vec<String>>(channel_key, 0, (limit - 1) as isize)
+        .await
+        .map_err(|err| CacheError::from(err))?;
+
+    // cache hit and reach the limit
+    if !cache_msgs.is_empty() && (cache_msgs.len() as i64) == limit {
+        return Ok(cache_msgs
+            .into_iter()
+            .map(|s| {
+                serde_json::from_str(&s).unwrap_or_else(|err| {
+                    // it is not likely to happen, just log it
+                    tracing::error!(
+                        "Failed to deserialize message from cache: {}, error: {}",
+                        s,
+                        err
+                    );
+
+                    RspMessage {
+                        id: "".to_string(),
+                        channel_id: "".to_string(),
+                        sender_id: "".to_string(),
+                        content: "Corrupted message".to_string(),
+                        created_at: "".to_string(),
+                    }
+                })
+            })
+            .collect());
+    }
+
+    // cache hit, but may not reach the limit, so search from database if needed
+    if (cache_msgs.len() as i64) < limit {
+        let mut msgs = list_channel_messages(
+            pool.clone(),
+            channel_id.clone(),
+            // fetch more to avoid new messages arriving during the process
+            std::cmp::min(cache_msgs.len() as i64 - 10, 0),
+            // as well, fetch a little more than needed
+            limit - cache_msgs.len() as i64 + 10,
+        )
+        .await?;
+
+        // merge the cache and database results, remove duplicates
+        cache_msgs.into_iter().for_each(|s| {
+            if let Ok(msg) = serde_json::from_str::<RspMessage>(&s) {
+                msgs.push(msg);
+            }
+
+            tracing::error!("Failed to deserialize message from cache: {}", s);
+        });
+
+        return Ok(msgs);
+    }
+
+    // cache miss, load from database with a lock
+
+    tracing::info!("Cache miss for recent messages in channel {}", channel_id);
+
+    let lock_key = format!("lock:channel:{}:recent_messages", channel_id);
+    let uuid_val = util::generate_id();
+
+    if service::lock_channel_message_cache(conn, lock_key.clone(), uuid_val.clone(), 5).await?
+        == false
+    {
+        // someone else is updating the cache, wait a moment and try to get from cache again
+        // we will try for 10 times, each time wait for 100ms
+        for i in 0..10 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            let msgs = conn
+                .lrange::<_, Vec<String>>(
+                    format!("channel:{}:recent_messages", channel_id),
+                    0,
+                    (limit - 1) as isize,
+                )
+                .await
+                .map_err(|err| CacheError::from(err))?;
+
+            if !msgs.is_empty() {
+                return Ok(msgs
+                    .into_iter()
+                    .map(|s| {
+                        serde_json::from_str(&s).unwrap_or_else(|err| {
+                            // it is not likely to happen, just log it
+                            tracing::error!(
+                                "Failed to deserialize message from cache: {}, error: {}",
+                                s,
+                                err
+                            );
+
+                            RspMessage {
+                                id: "".to_string(),
+                                channel_id: "".to_string(),
+                                sender_id: "".to_string(),
+                                content: "Corrupted message".to_string(),
+                                created_at: "".to_string(),
+                            }
+                        })
+                    })
+                    .collect());
+            }
+
+            tracing::trace!(
+                "Retrying to get recent messages from cache for channel {}, attempt {}",
+                channel_id,
+                i + 1
+            );
+        }
+
+        // still not found, fall back to database
+        // FIXME: this may cause thundering herd problem, need a better solution
+        tracing::trace!(
+            "Failed to get recent messages from cache for channel {} after retries, falling back to database",
+            channel_id
+        );
+
+        let msgs = list_channel_messages(pool.clone(), channel_id.clone(), 0, limit).await?;
+
+        return Ok(msgs);
+    }
+
+    // successfully acquired the lock, load from database and update the cache
+
+    let msgs = list_channel_messages(pool.clone(), channel_id.clone(), 0, limit).await?;
+
+    if !msgs.is_empty() {
+        // clear the old cache first
+        conn.del::<_, ()>(format!("channel:{}:recent_messages", channel_id))
+            .await
+            .map_err(|err| CacheError::from(err))?;
+
+        let serialized_msgs = msgs
+            .iter()
+            .map(|msg| {
+                serde_json::to_string(msg).unwrap_or_else(|err| {
+                    // it is not likely to happen, just log it
+                    tracing::error!(
+                        "Failed to serialize message for cache: {:?}, error: {}",
+                        msg,
+                        err
+                    );
+
+                    return "".to_string();
+                })
+            })
+            // skip the corrupted ones
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>();
+
+        // rebuild the cache and set an expiration time of 24 hour
+        conn.rpush::<_, _, ()>(
+            format!("channel:{}:recent_messages", channel_id),
+            serialized_msgs,
+        )
+        .await
+        .map_err(|err| CacheError::from(err))?;
+
+        conn.expire::<_, ()>(
+            format!("channel:{}:recent_messages", channel_id),
+            24 * 60 * 60,
+        )
+        .await
+        .map_err(|err| CacheError::from(err))?;
+    }
+
+    // release the lock
+    service::unlock_channel_message_cache(conn, lock_key, uuid_val).await?;
+
+    return Ok(msgs);
 }

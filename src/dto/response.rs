@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RspUserInfo {
@@ -26,7 +26,7 @@ pub struct RspChannelMember {
     pub joined_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RspMessage {
     pub id: String,
     pub channel_id: String,

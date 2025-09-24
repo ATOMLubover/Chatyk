@@ -9,15 +9,9 @@ Authorization: Bearer {{token}}
 Content-Type: application/json
 
 {
-  "members": [
-    {
-        "member_id": "01996ca0-9649-7700-ac6f-1074f0701ab0",
-        "member_name": "anotheruser"
-    },
-    {
-        "member_id": "01996c9b-5e17-7823-9d0f-f296135ffd28",
-        "member_name": "testuser"
-    }
+  "member_ids": [ 
+    "01996ca0-9649-7700-ac6f-1074f0701ab0",
+    "01996c9b-5e17-7823-9d0f-f296135ffd28" 
   ],
   "channel_type": "private"
 }
@@ -31,6 +25,17 @@ Authorization: Bearer {{token}}
 
 GET http://localhost:8080/api/channels/01996ca5-cda7-7173-8d21-86eb929f6e1c/members HTTP/1.1
 Authorization: Bearer {{token}}
+
+### join channel test
+
+POST http://localhost:8080/api/channels/01996ca5-cda7-7173-8d21-86eb929f6e1c/members HTTP/1.1
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "channel_id": "01996ca5-cda7-7173-8d21-86eb929f6e1c",
+  "user_id": "01996c9b-5e17-7823-9d0f-f296135ffd28"
+}
 
 ### quit channel test
 

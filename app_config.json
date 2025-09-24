@@ -5,5 +5,7 @@
     "jwt_decoding_key_env": "JWT_DECODING_KEY",
     "jwt_expiration_hours": 24,
     "upload_dir": "./uploads",
-    "resource_url_prefix": "/resources"
+    "resource_base_url": "/resources",
+    "redis_host": "8.141.92.242",
+    "redis_port": "6379"
 }

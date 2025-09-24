@@ -24,13 +24,10 @@ fn append_token_cookie(
     encoding_key: &EncodingKey,
     expiration_time: Duration,
 ) -> AppResult<()> {
-    let token = match encode_jwt(token, &encoding_key).map_err(|err| {
+    let token = encode_jwt(token, &encoding_key).map_err(|err| {
         tracing::error!("Failed to encode JWT: {:?}", err);
         AppError::TokenGenerationFailure
-    }) {
-        Ok(t) => t,
-        Err(app_err) => return Err(app_err),
-    };
+    })?;
 
     super::append_cookie(
         response,
@@ -60,7 +57,7 @@ pub async fn register_user(
     let mut response = (StatusCode::CREATED, Json(result)).into_response();
 
     // add auth header with JWT
-    let response = append_token_cookie(
+    append_token_cookie(
         &mut response,
         UserToken {
             user_id: user_id.clone(),
@@ -90,7 +87,7 @@ pub async fn login_user(
     let mut response = (StatusCode::OK, Json(result)).into_response();
 
     // add auth header with JWT
-    let response = append_token_cookie(
+    append_token_cookie(
         &mut response,
         UserToken {
             user_id: user_id.clone(),

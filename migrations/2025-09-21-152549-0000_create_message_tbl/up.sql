@@ -7,3 +7,5 @@ CREATE TABLE IF NOT EXISTS message_tbl (
     content TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_message_created_at ON message_tbl(created_at DESC);

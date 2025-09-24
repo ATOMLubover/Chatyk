@@ -1,3 +1,4 @@
+mod cache;
 mod config;
 mod dto;
 mod handler;
@@ -15,9 +16,11 @@ use diesel::r2d2::{ConnectionManager, Pool};
 use tokio::net::TcpListener;
 use tokio::signal;
 
+use crate::cache::Cache;
 use crate::config::AppConfig;
 
 type DbPool = Arc<Pool<ConnectionManager<PgConnection>>>;
+type CachePool = Arc<Cache>;
 
 pub fn initialize_logger() -> Result<(), Error> {
     // load .env file, in order to read RUST_LOG env variable
@@ -57,7 +60,13 @@ pub fn initialize_database(config: &AppConfig) -> Result<DbPool, Error> {
     return Ok(Arc::new(pool));
 }
 
-pub async fn serve(config: AppConfig, db_pool: DbPool) -> Result<(), Error> {
+pub async fn initialize_cache(config: &AppConfig) -> Result<CachePool, Error> {
+    let cache = Cache::new(config.redis_host.clone(), config.redis_port.clone()).await?;
+
+    return Ok(Arc::new(cache));
+}
+
+pub async fn serve(config: AppConfig, db_pool: DbPool, cache_pool: CachePool) -> Result<(), Error> {
     let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
 
     let listener = TcpListener::bind(addr)
@@ -66,7 +75,7 @@ pub async fn serve(config: AppConfig, db_pool: DbPool) -> Result<(), Error> {
 
     tracing::debug!("Server is now listening on {}", addr);
 
-    let app_router = handler::get_router(config, db_pool)?;
+    let app_router = handler::get_router(config, db_pool, cache_pool)?;
 
     axum::serve(listener, app_router.into_make_service())
         .with_graceful_shutdown(async {

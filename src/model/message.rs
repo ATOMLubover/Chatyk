@@ -1,6 +1,7 @@
 use crate::schema::message_tbl;
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
+use serde::Serialize;
 
 #[derive(Debug, Clone, Insertable)]
 #[diesel(table_name = message_tbl)]
@@ -14,7 +15,7 @@ pub struct NewMessage {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Selectable, Queryable)]
+#[derive(Debug, Clone, Selectable, Queryable, Serialize)]
 #[diesel(table_name = message_tbl)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 pub struct MessageInfo {

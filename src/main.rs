@@ -10,7 +10,9 @@ async fn main() -> Result<(), Error> {
 
     let db_pool = chatyk::initialize_database(&config)?;
 
-    chatyk::serve(config, db_pool).await?;
+    let cache = chatyk::initialize_cache(&config).await?;
+
+    chatyk::serve(config, db_pool, cache).await?;
 
     return Ok(());
 }

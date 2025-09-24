@@ -2,6 +2,7 @@ mod auth;
 mod channel;
 mod message;
 mod middleware;
+mod notify;
 mod resource;
 mod user;
 
@@ -14,17 +15,23 @@ use axum::{
     routing,
 };
 use cookie::time::Duration;
+use dashmap::DashMap;
 use thiserror::Error;
+use tower_http::services::ServeDir;
 
-use crate::{DbPool, config::AppConfig, dto::ErrorResponse, service::ServiceError};
+use crate::{
+    Cache, CachePool, DbPool, config::AppConfig, dto::ErrorResponse, service::ServiceError,
+};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct AppState {
     config: AppConfig,
     db_pool: DbPool,
+    cache_pool: CachePool,
     jwt_encoding_key: String,
     jwt_decoding_key: String,
+    online_users: DashMap<String, ()>,
 }
 
 #[derive(Debug, Error)]
@@ -134,10 +141,16 @@ impl From<ServiceError> for AppError {
             ServiceError::BlockingJoinError(_) => {
                 AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
             }
+            ServiceError::CacheError(_) => {
+                AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            }
+            ServiceError::SerdeJsonError(_) => {
+                AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+            }
             ServiceError::StdIoError(_) => {
                 AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
             }
-            ServiceError::ResourceUploadError(_) => {
+            ServiceError::ResourceMultipartError(_) => {
                 AppError::ServiceError(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
             }
             ServiceError::DbPoolError(_) => {
@@ -177,7 +190,11 @@ pub fn append_cookie(
     return Ok(());
 }
 
-pub fn get_router(config: AppConfig, db_pool: DbPool) -> Result<Router, Error> {
+pub fn get_router(
+    config: AppConfig,
+    db_pool: DbPool,
+    cache_pool: CachePool,
+) -> Result<Router, Error> {
     dotenvy::dotenv().map_err(|err| anyhow::anyhow!("Failed to load .env file: {err}."))?;
 
     let jwt_encoding_key = std::env::var(&config.jwt_encoding_key_env)
@@ -221,6 +238,9 @@ pub fn get_router(config: AppConfig, db_pool: DbPool) -> Result<Router, Error> {
         .nest("/users", user_router)
         .nest("/channels", channel_router)
         .nest("/resources", resource_router)
+        // proxy static files for uploaded resources
+        // e.g. GET /resources/xxxx -> ./uploads/xxxx
+        .nest_service(&config.resource_base_url, ServeDir::new(&config.upload_dir))
         .layer(axum::middleware::from_fn_with_state(
             jwt_decoding_key.clone(),
             middleware::auth_middleware,
@@ -237,8 +257,10 @@ pub fn get_router(config: AppConfig, db_pool: DbPool) -> Result<Router, Error> {
         .with_state(AppState {
             config,
             db_pool,
+            cache_pool,
             jwt_decoding_key,
             jwt_encoding_key,
+            online_users: DashMap::new(),
         });
 
     return Ok(app_router);

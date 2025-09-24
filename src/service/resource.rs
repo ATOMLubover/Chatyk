@@ -4,10 +4,7 @@ use axum::extract::multipart::Field;
 use chrono::Utc;
 use tokio::{fs::File, io::AsyncWriteExt as _};
 
-use crate::{
-    dto::RspResourceInfo,
-    service::{ServiceError, ServiceResult},
-};
+use crate::{dto::RspResourceInfo, service::ServiceResult};
 
 pub async fn save_resource(
     field: &mut Field<'_>,
@@ -32,9 +29,7 @@ pub async fn save_resource(
 
     let mut file = File::create(&upload_path).await?;
 
-    while let Some(chunk) = field.chunk().await.map_err(|err| {
-        ServiceError::ResourceUploadError(format!("Error reading chunk from field: {}", err))
-    })? {
+    while let Some(chunk) = field.chunk().await? {
         file.write_all(&chunk).await?;
     }
 
