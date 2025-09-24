@@ -27,7 +27,8 @@ pub async fn send_message(
 
     service::create_message(
         Arc::clone(&state.db_pool),
-        Arc::clone(&state.cache_pool),
+        Arc::clone(&state.cache_cli),
+        Arc::clone(&state.online_users),
         payload,
     )
     .await?;
@@ -41,6 +42,19 @@ pub async fn get_message_list(
     Path(channel_id): Path<String>,
 ) -> AppResult<impl IntoResponse> {
     tracing::trace!("Get message list for channel id: {}", channel_id);
+
+    // shortcut: get recent messages from cache
+    if params.offset.unwrap_or(0) == 0 {
+        let messages = service::list_channel_recent_messages(
+            Arc::clone(&state.db_pool),
+            Arc::clone(&state.cache_cli),
+            channel_id,
+            params.limit.unwrap_or(20),
+        )
+        .await?;
+
+        return Ok((StatusCode::OK, Json(messages)));
+    }
 
     // FIXME: a user can only get messages from channels he/she is a member of
     // espacially for private channels

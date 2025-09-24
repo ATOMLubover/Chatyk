@@ -20,7 +20,13 @@ pub async fn create_channel(
 ) -> AppResult<impl IntoResponse> {
     tracing::trace!("Create channel payload: {:?}", payload);
 
-    service::create_channel(Arc::clone(&state.db_pool), payload).await?;
+    service::create_channel(
+        Arc::clone(&state.db_pool),
+        Arc::clone(&state.cache_cli),
+        Arc::clone(&state.online_users),
+        payload,
+    )
+    .await?;
 
     return Ok(StatusCode::CREATED);
 }
@@ -49,7 +55,12 @@ pub async fn get_channel_member_list(
 ) -> AppResult<impl IntoResponse> {
     tracing::trace!("Get channel member list for channel_id: {}", channel_id);
 
-    let list = service::list_channel_members(Arc::clone(&state.db_pool), channel_id).await?;
+    let list = service::list_channel_members(
+        Arc::clone(&state.db_pool),
+        Arc::clone(&state.cache_cli),
+        channel_id,
+    )
+    .await?;
 
     return Ok((StatusCode::OK, Json(list)));
 }
@@ -66,7 +77,13 @@ pub async fn join_channel(
         return Ok(StatusCode::FORBIDDEN);
     }
 
-    service::add_user_to_channel(Arc::clone(&state.db_pool), payload).await?;
+    service::add_user_to_channel(
+        Arc::clone(&state.db_pool),
+        Arc::clone(&state.cache_cli),
+        Arc::clone(&state.online_users),
+        payload,
+    )
+    .await?;
 
     return Ok(StatusCode::NO_CONTENT);
 }
@@ -83,7 +100,13 @@ pub async fn quit_channel(
         return Ok(StatusCode::FORBIDDEN);
     }
 
-    service::remove_user_from_channel(Arc::clone(&state.db_pool), payload).await?;
+    service::remove_user_from_channel(
+        Arc::clone(&state.db_pool),
+        Arc::clone(&state.cache_cli),
+        Arc::clone(&state.online_users),
+        payload,
+    )
+    .await?;
 
     return Ok(StatusCode::NO_CONTENT);
 }

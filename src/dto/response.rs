@@ -17,7 +17,7 @@ pub struct RspChannelInfo {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RspChannelMember {
     pub user_id: String,
     pub username: String,

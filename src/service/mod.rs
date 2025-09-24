@@ -74,14 +74,22 @@ pub type ServiceResult<T> = Result<T, ServiceError>;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-pub enum PollEvent {
+pub enum PushEvent {
     MessageSpawned {
+        message_id: String,
         channel_id: String,
-        message_content: String,
+        sender_id: String,
+        content: String,
+        created_at: String,
     },
-    /// `ChannelUpdated` is sent when a channel is created,
-    /// or when users are added to or removed from a channel
-    ChannelUpdated { channel_id: String },
+    // client should refresh the channel member list
+    // when receiving this two events
+    UserJoinedChannel {
+        channel_id: String,
+    },
+    UserLeftChannel {
+        channel_id: String,
+    },
 }
 
 async fn lock_channel_message_cache(

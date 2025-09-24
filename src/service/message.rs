@@ -1,44 +1,50 @@
+use std::sync::Arc;
+
 use chrono::Utc;
+use dashmap::DashMap;
 use diesel::prelude::*;
 use redis::{AsyncCommands, Commands};
-use tokio::task;
+use tokio::{sync::broadcast::Sender, task};
 
 use crate::{
-    CachePool, DbPool,
+    CacheCli, DbPool,
     cache::CacheError,
     dto::{ReqSendMessage, RspMessage},
     model::{MessageInfo, NewMessage},
-    service::{self, ServiceError, ServiceResult},
+    service::{self, PushEvent, ServiceError, ServiceResult, channel},
     util,
 };
 
 pub async fn create_message(
     pool: DbPool,
-    cache: CachePool,
+    cache: CacheCli,
+    online_users: Arc<DashMap<String, Sender<PushEvent>>>,
     req: ReqSendMessage,
 ) -> ServiceResult<()> {
     use crate::schema::message_tbl::dsl::*;
 
-    let req_clone = req.clone();
+    let pool_clone = pool.clone();
+    let cache_clone = cache.clone();
+
+    let msg_id = util::generate_id();
+
+    // TODO: validate the resources in the content
+    let new_message = NewMessage {
+        id: msg_id,
+        channel_id: req.channel_id.clone(),
+        sender_id: req.sender_id,
+        content: req.content,
+        created_at: Utc::now(),
+    };
+
+    let new_message_clone = new_message.clone();
 
     // insert the new message into database first
-    task::spawn_blocking::<_, ServiceResult<()>>(move || {
-        let msg_id = util::generate_id();
-
-        // TODO: validate the resources in the content
-        let new_message = NewMessage {
-            id: msg_id,
-            channel_id: req_clone.channel_id.clone(),
-            sender_id: req_clone.sender_id,
-            content: req_clone.content,
-            created_at: Utc::now(),
-        };
-
+    task::spawn_blocking(move || {
         let conn = &mut pool.get()?;
 
         // we need a strong consistency with cache here, so we use a transaction
-
-        return conn.transaction(|conn| {
+        return conn.transaction::<_, ServiceError, _>(|conn| {
             diesel::insert_into(message_tbl)
                 .values(&new_message.clone())
                 .execute(conn)?;
@@ -58,7 +64,6 @@ pub async fn create_message(
 
             let cache_conn = &mut cache.get_sync_conn()?;
 
-            // FIXME: what if lpush fails?
             cache_conn
                 .lpush::<_, _, ()>(channel_key, msg_val)
                 .map_err(|err| CacheError::from(err))?;
@@ -68,7 +73,40 @@ pub async fn create_message(
     })
     .await??;
 
-    todo!()
+    // notify online users in the channel in background
+    tokio::spawn(async move {
+        let channel_members =
+            match channel::list_channel_members(pool_clone, cache_clone, req.channel_id).await {
+                Ok(members) => members,
+                Err(err) => {
+                    tracing::error!("Failed to list channel members in create_message: {}", err);
+                    return;
+                }
+            };
+
+        for member in channel_members.into_iter() {
+            if let Some(tx) = online_users.get(&member.user_id) {
+                if let Err(err) = tx.send(PushEvent::MessageSpawned {
+                    message_id: new_message_clone.id.clone(),
+                    channel_id: new_message_clone.channel_id.clone(),
+                    sender_id: new_message_clone.sender_id.clone(),
+                    content: new_message_clone.content.clone(),
+                    created_at: new_message_clone
+                        .created_at
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string(),
+                }) {
+                    tracing::error!(
+                        "Failed to send PushEvent to user {}: {}",
+                        &member.user_id,
+                        err
+                    );
+                }
+            }
+        }
+    });
+
+    return Ok(());
 }
 
 pub async fn list_channel_messages(
@@ -109,7 +147,7 @@ pub async fn list_channel_messages(
 /// this will be useful for cache acceleration
 pub async fn list_channel_recent_messages(
     pool: DbPool,
-    cache: CachePool,
+    cache: CacheCli,
     channel_id: String,
     limit: i64,
 ) -> ServiceResult<Vec<RspMessage>> {
@@ -172,7 +210,6 @@ pub async fn list_channel_recent_messages(
     }
 
     // cache miss, load from database with a lock
-
     tracing::info!("Cache miss for recent messages in channel {}", channel_id);
 
     let lock_key = format!("lock:channel:{}:recent_messages", channel_id);

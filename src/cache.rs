@@ -25,8 +25,13 @@ pub struct Cache {
 }
 
 impl Cache {
-    pub async fn new(host: String, port: String) -> Result<Self, Error> {
-        let redis_cli = Client::open(format!("redis://{}:{}", host, port))
+    pub async fn new(env_var: String) -> Result<Self, Error> {
+        dotenvy::dotenv().map_err(|err| anyhow::anyhow!("Failed to load .env file: {err}."))?;
+
+        let redis_url = std::env::var(env_var)
+            .map_err(|err| anyhow::anyhow!("Failed to get REDIS_URL from env: {err}."))?;
+
+        let redis_cli = Client::open(redis_url)
             .map_err(|err| anyhow::anyhow!("Failed to create Redis client: {}.", err))?;
 
         // test the connection with a ping
@@ -57,7 +62,7 @@ impl Cache {
         return Ok(conn);
     }
 
-    pub fn get_sync_conn(&self) -> CacheResult<Connection> {
+    pub fn get_sync_conn(&self) -> CacheResult<CacheSyncConn> {
         let conn = self.redis_cli.get_connection()?;
 
         return Ok(conn);

@@ -14,8 +14,7 @@ pub struct AppConfig {
     pub upload_dir: String,
     pub resource_base_url: String,
 
-    pub redis_host: String,
-    pub redis_port: String,
+    pub redis_url_env: String,
 }
 
 impl AppConfig {

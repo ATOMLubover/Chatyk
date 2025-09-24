@@ -1,17 +1,29 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use diesel::prelude::*;
-use tokio::task;
+use redis::{AsyncCommands, Commands};
+use tokio::{sync::broadcast::Sender, task};
 
-use crate::DbPool;
-use crate::dto::{
-    ReqAddUserToChannel, ReqCreateChannel, ReqRemoveUserFromChannel, RspChannelInfo,
-    RspChannelMember,
+use crate::{
+    CacheCli, DbPool,
+    cache::CacheError,
+    dto::{
+        ReqAddUserToChannel, ReqCreateChannel, ReqRemoveUserFromChannel, RspChannelInfo,
+        RspChannelMember,
+    },
+    model::{ChannelInfo, NewChannel, NewChannelMember, UserInfo},
+    service::{PushEvent, ServiceError, ServiceResult},
+    util,
 };
-use crate::model::{ChannelInfo, NewChannel, NewChannelMember, UserInfo};
-use crate::service::{ServiceError, ServiceResult};
-use crate::util;
 
-pub async fn create_channel(pool: DbPool, req: ReqCreateChannel) -> ServiceResult<()> {
+pub async fn create_channel(
+    pool: DbPool,
+    cache: CacheCli,
+    online_users: Arc<DashMap<String, Sender<PushEvent>>>,
+    req: ReqCreateChannel,
+) -> ServiceResult<()> {
     use crate::schema::channel_member_tbl;
     use crate::schema::channel_tbl;
 
@@ -19,8 +31,11 @@ pub async fn create_channel(pool: DbPool, req: ReqCreateChannel) -> ServiceResul
         return Err(ServiceError::InvalidChannelMemberNumber);
     }
 
-    return task::spawn_blocking(move || {
-        let conn = &mut pool.get()?;
+    let pool_clone = pool.clone();
+    let member_ids_clone = req.member_ids.clone();
+
+    let new_channel_id = task::spawn_blocking(move || {
+        let conn = &mut pool_clone.get()?;
 
         // use transaction in case adding members to channel not existing
         return conn.transaction(|conn| {
@@ -64,12 +79,32 @@ pub async fn create_channel(pool: DbPool, req: ReqCreateChannel) -> ServiceResul
                 .values(&members)
                 .execute(conn)?
             {
-                rows if rows == members.len() => Ok(()),
+                rows if rows == members.len() => Ok(new_channel_id),
                 _ => Err(ServiceError::ChannelCreationFailure),
             };
         });
     })
-    .await?;
+    .await??;
+
+    // list the members of the newly created channel,
+    // which populates the cache implicitly
+    list_channel_members(pool, cache, new_channel_id.clone()).await?;
+
+    // notify other members in the channel to refresh their member list
+    tokio::spawn(async move {
+        for member_id in member_ids_clone.into_iter() {
+            // broadcast to related user
+            if let Some(tx) = online_users.get(&member_id) {
+                if let Err(err) = tx.send(PushEvent::UserJoinedChannel {
+                    channel_id: new_channel_id.clone(),
+                }) {
+                    tracing::error!("Failed to send push event to user {}: {}", member_id, err);
+                }
+            }
+        }
+    });
+
+    return Ok(());
 }
 
 pub async fn list_user_channels(
@@ -113,11 +148,30 @@ pub async fn list_user_channels(
 
 pub async fn list_channel_members(
     pool: DbPool,
+    cache: CacheCli,
     channel_id: String,
 ) -> ServiceResult<Vec<RspChannelMember>> {
     use crate::schema::channel_member_tbl;
     use crate::schema::user_tbl;
 
+    // try getting from cache first
+    let channel_key = format!("channel:{}:members", &channel_id);
+
+    let cache_conn = &mut cache.get_async_conn().await?;
+
+    let members = cache_conn
+        .get::<_, Option<String>>(channel_key.clone())
+        .await
+        .map_err(|err| CacheError::from(err))?;
+
+    if let Some(members) = members {
+        // cache hit, deserialize and return
+        let rsp_members = serde_json::from_str::<Vec<RspChannelMember>>(&members)?;
+
+        return Ok(rsp_members);
+    }
+
+    // cache miss, query from database and populate the cache
     return task::spawn_blocking(move || {
         let conn = &mut pool.get()?;
 
@@ -127,7 +181,7 @@ pub async fn list_channel_members(
             .select((UserInfo::as_select(), channel_member_tbl::joined_at))
             .load::<(UserInfo, DateTime<Utc>)>(conn)?;
 
-        return Ok(results
+        let members = results
             .into_iter()
             .map(|tuple| RspChannelMember {
                 user_id: tuple.0.id,
@@ -136,17 +190,42 @@ pub async fn list_channel_members(
                 channel_id: channel_id.to_string(),
                 joined_at: tuple.1.format("%Y-%m-%d %H:%M:%S").to_string(),
             })
-            .collect::<Vec<_>>());
+            .collect::<Vec<_>>();
+
+        // serialize and populate the cache
+        let serialized = serde_json::to_string(&members)?;
+
+        let cache_conn = &mut cache.get_sync_conn()?;
+
+        // ignore error here
+        let _ = cache_conn
+            .set_ex::<_, _, ()>(channel_key, serialized, 24 * 60 * 60)
+            .map_err(|err| {
+                tracing::error!(
+                    "Failed to set channel members cache: {}",
+                    CacheError::from(err)
+                );
+            });
+
+        return Ok(members);
     })
     .await?;
 }
 
-pub async fn add_user_to_channel(pool: DbPool, req: ReqAddUserToChannel) -> ServiceResult<()> {
+pub async fn add_user_to_channel(
+    pool: DbPool,
+    cache: CacheCli,
+    online_users: Arc<DashMap<String, Sender<PushEvent>>>,
+    req: ReqAddUserToChannel,
+) -> ServiceResult<()> {
     use crate::schema::channel_member_tbl::dsl::*;
     use diesel::result::DatabaseErrorKind;
     use diesel::result::Error::DatabaseError;
 
-    return task::spawn_blocking(move || {
+    let channel_id_clone = req.channel_id.clone();
+    let user_id_clone = req.user_id.clone();
+
+    task::spawn_blocking(move || {
         let conn = &mut pool.get()?;
 
         let new_member = NewChannelMember {
@@ -172,7 +251,36 @@ pub async fn add_user_to_channel(pool: DbPool, req: ReqAddUserToChannel) -> Serv
             },
         }
     })
-    .await?;
+    .await??;
+
+    // invalidate the channel member cache
+    let cache_key = format!("channel:{}:members", &channel_id_clone);
+
+    let cache_conn = &mut cache.get_async_conn().await?;
+
+    cache_conn
+        .del::<_, ()>(cache_key)
+        .await
+        .map_err(|err| CacheError::from(err))?;
+
+    // notify other members in the channel to refresh their member list
+    tokio::spawn(async move {
+        // broadcast to related user
+        // FIXME: the inviter user should refresh by himself after get OK response
+        if let Some(tx) = online_users.get(&user_id_clone) {
+            if let Err(err) = tx.send(PushEvent::UserJoinedChannel {
+                channel_id: channel_id_clone,
+            }) {
+                tracing::error!(
+                    "Failed to send push event to user {}: {}",
+                    user_id_clone,
+                    err
+                );
+            }
+        }
+    });
+
+    return Ok(());
 }
 
 /// `remove_user_from_channel` removes a user from a channel
@@ -180,12 +288,17 @@ pub async fn add_user_to_channel(pool: DbPool, req: ReqAddUserToChannel) -> Serv
 /// but the function is idempotent
 pub async fn remove_user_from_channel(
     pool: DbPool,
+    cache: CacheCli,
+    online_users: Arc<DashMap<String, Sender<PushEvent>>>,
     req: ReqRemoveUserFromChannel,
 ) -> ServiceResult<()> {
     use crate::schema::channel_member_tbl::dsl::*;
 
+    let channel_id_clone = req.channel_id.clone();
+    let user_id_clone = req.user_id.clone();
+
     // TODO: delete the channel if there is no member in it anymore
-    return task::spawn_blocking(move || {
+    task::spawn_blocking(move || {
         let conn = &mut pool.get()?;
 
         return match diesel::delete(
@@ -199,5 +312,33 @@ pub async fn remove_user_from_channel(
             _ => Ok(()),
         };
     })
-    .await?;
+    .await??;
+
+    // invalidate the channel member cache
+    let cache_key = format!("channel:{}:members", &channel_id_clone);
+
+    let cache_conn = &mut cache.get_async_conn().await?;
+
+    cache_conn
+        .del::<_, ()>(cache_key)
+        .await
+        .map_err(|err| CacheError::from(err))?;
+
+    // notify other members in the channel to refresh their member list
+    tokio::spawn(async move {
+        // broadcast to related user
+        if let Some(tx) = online_users.get(&user_id_clone) {
+            if let Err(err) = tx.send(PushEvent::UserLeftChannel {
+                channel_id: channel_id_clone,
+            }) {
+                tracing::error!(
+                    "Failed to send push event to user {}: {}",
+                    user_id_clone,
+                    err
+                );
+            }
+        }
+    });
+
+    return Ok(());
 }

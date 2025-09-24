@@ -6,6 +6,8 @@ mod notify;
 mod resource;
 mod user;
 
+use std::sync::Arc;
+
 use anyhow::{Error, Result};
 use axum::{
     Json, Router,
@@ -17,10 +19,14 @@ use axum::{
 use cookie::time::Duration;
 use dashmap::DashMap;
 use thiserror::Error;
+use tokio::sync::broadcast::Sender;
 use tower_http::services::ServeDir;
 
 use crate::{
-    Cache, CachePool, DbPool, config::AppConfig, dto::ErrorResponse, service::ServiceError,
+    CacheCli, DbPool,
+    config::AppConfig,
+    dto::ErrorResponse,
+    service::{PushEvent, ServiceError},
 };
 
 #[derive(Debug, Clone)]
@@ -28,10 +34,10 @@ use crate::{
 struct AppState {
     config: AppConfig,
     db_pool: DbPool,
-    cache_pool: CachePool,
+    cache_cli: CacheCli,
     jwt_encoding_key: String,
     jwt_decoding_key: String,
-    online_users: DashMap<String, ()>,
+    online_users: Arc<DashMap<String, Sender<PushEvent>>>,
 }
 
 #[derive(Debug, Error)]
@@ -44,6 +50,12 @@ pub enum AppError {
 
     #[error("Failed to parse cookie")]
     CookieAppendError,
+
+    #[error("Serde JSON error: {0}")]
+    SerdeJsonError(#[from] serde_json::Error),
+
+    #[error("SSE stream error: {0}")]
+    SseStreamError(#[from] tokio_stream::wrappers::errors::BroadcastStreamRecvError),
 
     #[error("Failed to parse multipart form data: {0}")]
     MultiPartParseError(#[from] axum::extract::multipart::MultipartError),
@@ -59,6 +71,8 @@ impl Into<StatusCode> for AppError {
             AppError::ServiceError(status, _) => status,
             AppError::TokenGenerationFailure => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::CookieAppendError => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::SerdeJsonError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AppError::SseStreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::MultiPartParseError(_) => StatusCode::BAD_REQUEST,
             AppError::UnknownError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -84,6 +98,14 @@ impl IntoResponse for AppError {
             AppError::CookieAppendError => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to parse cookie.".to_string(),
+            ),
+            AppError::SerdeJsonError(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to serialize/deserialize.".to_string(),
+            ),
+            AppError::SseStreamError(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "SSE stream error occurred.".to_string(),
             ),
             AppError::MultiPartParseError(_) => (
                 StatusCode::BAD_REQUEST,
@@ -193,7 +215,7 @@ pub fn append_cookie(
 pub fn get_router(
     config: AppConfig,
     db_pool: DbPool,
-    cache_pool: CachePool,
+    cache_cli: CacheCli,
 ) -> Result<Router, Error> {
     dotenvy::dotenv().map_err(|err| anyhow::anyhow!("Failed to load .env file: {err}."))?;
 
@@ -235,6 +257,7 @@ pub fn get_router(
 
     // router for APIs (auth middleware added)
     let api_router = Router::new()
+        .route("/notifications", routing::get(notify::pull_notifications))
         .nest("/users", user_router)
         .nest("/channels", channel_router)
         .nest("/resources", resource_router)
@@ -257,10 +280,10 @@ pub fn get_router(
         .with_state(AppState {
             config,
             db_pool,
-            cache_pool,
+            cache_cli,
             jwt_decoding_key,
             jwt_encoding_key,
-            online_users: DashMap::new(),
+            online_users: Arc::new(DashMap::new()),
         });
 
     return Ok(app_router);
