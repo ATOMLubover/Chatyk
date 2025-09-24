@@ -36,7 +36,7 @@ pub async fn save_resource(
     return Ok(RspResourceInfo {
         id: resource_id.clone(),
         url: format!("{}/{}", resource_base_url, &resource_id),
-        uploaded_at: Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        uploaded_at: Utc::now().to_rfc3339().to_string(),
     });
 }
 

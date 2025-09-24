@@ -138,8 +138,8 @@ pub async fn list_user_channels(
                 id: c.id,
                 chan_name: c.title,
                 channel_type: c.channel_type,
-                created_at: c.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
-                updated_at: c.updated_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                created_at: c.created_at.to_rfc3339().to_string(),
+                updated_at: c.updated_at.to_rfc3339().to_string(),
             })
             .collect::<Vec<_>>());
     })
@@ -188,7 +188,7 @@ pub async fn list_channel_members(
                 username: tuple.0.username,
                 user_email: tuple.0.email,
                 channel_id: channel_id.to_string(),
-                joined_at: tuple.1.format("%Y-%m-%d %H:%M:%S").to_string(),
+                joined_at: tuple.1.to_rfc3339().to_string(),
             })
             .collect::<Vec<_>>();
 

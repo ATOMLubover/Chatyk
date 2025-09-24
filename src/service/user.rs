@@ -44,7 +44,7 @@ pub async fn register_user(pool: DbPool, req: ReqRegisterUser) -> ServiceResult<
             id: user_info.id,
             username: user_info.username,
             email: user_info.email,
-            created_at: user_info.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+            created_at: user_info.created_at.to_rfc3339().to_string(),
         })
     })
     .await?;
@@ -95,7 +95,7 @@ pub async fn login_user(pool: DbPool, req: ReqUserLogin) -> ServiceResult<RspUse
             id: user_info.id,
             username: user_info.username,
             email: user_info.email,
-            created_at: user_info.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+            created_at: user_info.created_at.to_rfc3339().to_string(),
         })
     })
     .await?;
@@ -166,7 +166,7 @@ pub async fn get_user_by_id(pool: DbPool, user_id: String) -> Result<RspUserInfo
             id: user_info.id,
             username: user_info.username,
             email: user_info.email,
-            created_at: user_info.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+            created_at: user_info.created_at.to_rfc3339().to_string(),
         })
     })
     .await?;

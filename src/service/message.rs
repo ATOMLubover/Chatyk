@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use chrono::Utc;
 use dashmap::DashMap;
@@ -54,10 +54,7 @@ pub async fn create_message(
                 channel_id: new_message.channel_id.clone(),
                 sender_id: new_message.sender_id,
                 content: new_message.content,
-                created_at: new_message
-                    .created_at
-                    .format("%Y-%m-%d %H:%M:%S")
-                    .to_string(),
+                created_at: new_message.created_at.to_rfc3339().to_string(),
             })?;
 
             let channel_key = format!("channel:{}:recent_messages", new_message.channel_id);
@@ -91,10 +88,7 @@ pub async fn create_message(
                     channel_id: new_message_clone.channel_id.clone(),
                     sender_id: new_message_clone.sender_id.clone(),
                     content: new_message_clone.content.clone(),
-                    created_at: new_message_clone
-                        .created_at
-                        .format("%Y-%m-%d %H:%M:%S")
-                        .to_string(),
+                    created_at: new_message_clone.created_at.to_rfc3339().to_string(),
                 }) {
                     tracing::error!(
                         "Failed to send PushEvent to user {}: {}",
@@ -134,7 +128,7 @@ pub async fn list_channel_messages(
                 channel_id: msg.channel_id,
                 sender_id: msg.sender_id,
                 content: msg.content,
-                created_at: msg.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+                created_at: msg.created_at.to_rfc3339().to_string(),
             })
             .collect::<Vec<_>>();
 
@@ -160,57 +154,71 @@ pub async fn list_channel_recent_messages(
         .await
         .map_err(|err| CacheError::from(err))?;
 
-    // cache hit and reach the limit
-    if !cache_msgs.is_empty() && (cache_msgs.len() as i64) == limit {
-        return Ok(cache_msgs
-            .into_iter()
-            .map(|s| {
-                serde_json::from_str(&s).unwrap_or_else(|err| {
-                    // it is not likely to happen, just log it
-                    tracing::error!(
-                        "Failed to deserialize message from cache: {}, error: {}",
-                        s,
-                        err
-                    );
+    // cache hit
+    if cache_msgs.len() > 0 {
+        tracing::trace!("Cache hit for recent messages in channel {}", channel_id);
 
-                    RspMessage {
-                        id: "".to_string(),
-                        channel_id: "".to_string(),
-                        sender_id: "".to_string(),
-                        content: "Corrupted message".to_string(),
-                        created_at: "".to_string(),
-                    }
+        // if we have enough messages in cache, return directly
+        if cache_msgs.len() as i64 >= limit {
+            return Ok(cache_msgs
+                .into_iter()
+                .map(|s| {
+                    serde_json::from_str(&s).unwrap_or_else(|err| {
+                        // it is not likely to happen, just log it
+                        tracing::error!(
+                            "Failed to deserialize message from cache: {}, error: {}",
+                            s,
+                            err
+                        );
+
+                        RspMessage {
+                            id: "".to_string(),
+                            channel_id: "".to_string(),
+                            sender_id: "".to_string(),
+                            content: "".to_string(),
+                            created_at: "".to_string(),
+                        }
+                    })
                 })
-            })
-            .collect());
-    }
+                // skip the corrupted ones
+                .filter(|msg| !msg.id.is_empty())
+                .collect());
+        }
 
-    // cache hit, but may not reach the limit, so search from database if needed
-    if (cache_msgs.len() as i64) < limit {
+        // otherwise, we will fetch from database later
         let mut msgs = list_channel_messages(
             pool.clone(),
             channel_id.clone(),
             // fetch more to avoid new messages arriving during the process
-            std::cmp::min(cache_msgs.len() as i64 - 10, 0),
+            std::cmp::max(cache_msgs.len() as i64 - 10, 0),
             // as well, fetch a little more than needed
             limit - cache_msgs.len() as i64 + 10,
         )
         .await?;
 
         // merge the cache and database results, remove duplicates
-        cache_msgs.into_iter().for_each(|s| {
-            if let Ok(msg) = serde_json::from_str::<RspMessage>(&s) {
-                msgs.push(msg);
-            }
+        cache_msgs
+            .into_iter()
+            .for_each(|s| match serde_json::from_str(&s) {
+                Ok(msg) => msgs.push(msg),
+                Err(err) => {
+                    tracing::error!(
+                        "Failed to deserialize message from cache: {}, error: {}",
+                        s,
+                        err
+                    )
+                }
+            });
 
-            tracing::error!("Failed to deserialize message from cache: {}", s);
-        });
+        let mut seen = HashSet::new();
+
+        msgs.retain(|msg| seen.insert(msg.id.clone()));
 
         return Ok(msgs);
     }
 
     // cache miss, load from database with a lock
-    tracing::info!("Cache miss for recent messages in channel {}", channel_id);
+    tracing::trace!("Cache miss for recent messages in channel {}", channel_id);
 
     let lock_key = format!("lock:channel:{}:recent_messages", channel_id);
     let uuid_val = util::generate_id();
@@ -276,7 +284,6 @@ pub async fn list_channel_recent_messages(
     }
 
     // successfully acquired the lock, load from database and update the cache
-
     let msgs = list_channel_messages(pool.clone(), channel_id.clone(), 0, limit).await?;
 
     if !msgs.is_empty() {

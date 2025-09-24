@@ -1,0 +1,7 @@
+@token = eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiMDE5OTZjOWItNWUxNy03ODIzLTlkMGYtZjI5NjEzNWZmZDI4IiwiZXhwIjoxNzU4ODA3MDY2fQ.V_ey-0EZCsOLLMZTZQpMhlRQToz_xm-QPufojt4HmWg
+
+### SSE notification test
+
+GET http://localhost:8080/api/notifications HTTP/1.1
+Authorization: Bearer {{token}}
+Accept: text/event-stream

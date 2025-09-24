@@ -38,6 +38,9 @@ pub fn initialize_logger() -> Result<(), Error> {
 
 pub fn initialize_config() -> Result<AppConfig, Error> {
     let config = AppConfig::try_default_load()?;
+
+    tracing::debug!("Configuration loaded successfully: {:?}", config);
+
     return Ok(config);
 }
 
@@ -55,11 +58,15 @@ pub fn initialize_database(config: &AppConfig) -> Result<DbPool, Error> {
         .build(manager)
         .map_err(|err| anyhow::anyhow!(err))?;
 
+    tracing::debug!("Database connection pool created successfully.");
+
     return Ok(Arc::new(pool));
 }
 
 pub async fn initialize_cache(config: &AppConfig) -> Result<CacheCli, Error> {
     let cache = Cache::new(config.redis_url_env.clone()).await?;
+
+    tracing::debug!("Connected to Redis cache successfully.");
 
     return Ok(Arc::new(cache));
 }
