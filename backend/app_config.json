@@ -1,0 +1,10 @@
+{
+    "port": 8080,
+    "database_url_env": "DATABASE_URL",
+    "jwt_encoding_key_env": "JWT_ENCODING_KEY",
+    "jwt_decoding_key_env": "JWT_DECODING_KEY",
+    "jwt_expiration_hours": 24,
+    "upload_dir": "./uploads",
+    "resource_base_url": "/resources",
+    "redis_url_env": "REDIS_URL"
+}

@@ -1,0 +1,49 @@
+@token = eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiMDE5OTZjOWItNWUxNy03ODIzLTlkMGYtZjI5NjEzNWZmZDI4IiwiZXhwIjoxNzU4ODA3MDY2fQ.V_ey-0EZCsOLLMZTZQpMhlRQToz_xm-QPufojt4HmWg
+@token_another = eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiMDE5OTZjYTAtOTY0OS03NzAwLWFjNmYtMTA3NGYwNzAxYWIwIiwiZXhwIjoxNzU4NTUwNDg3fQ.whWHRAvYI_6-2ZrjolNXZFvDmSifdp-OnVTGWwBegeQ
+
+
+### create channel test
+
+POST http://localhost:8080/api/channels HTTP/1.1
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "member_ids": [ 
+    "01996ca0-9649-7700-ac6f-1074f0701ab0",
+    "01996c9b-5e17-7823-9d0f-f296135ffd28" 
+  ],
+  "channel_type": "private"
+}
+
+### get channel list test
+
+GET http://localhost:8080/api/channels HTTP/1.1
+Authorization: Bearer {{token}}
+
+### get channel member list test
+
+GET http://localhost:8080/api/channels/01996ca5-cda7-7173-8d21-86eb929f6e1c/members HTTP/1.1
+Authorization: Bearer {{token}}
+
+### join channel test
+
+POST http://localhost:8080/api/channels/01996ca5-cda7-7173-8d21-86eb929f6e1c/members HTTP/1.1
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "channel_id": "01996ca5-cda7-7173-8d21-86eb929f6e1c",
+  "user_id": "01996c9b-5e17-7823-9d0f-f296135ffd28"
+}
+
+### quit channel test
+
+DELETE http://localhost:8080/api/channels/01996ca5-cda7-7173-8d21-86eb929f6e1c/members HTTP/1.1
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "channel_id": "01996ca5-cda7-7173-8d21-86eb929f6e1c",
+  "user_id": "01996c9b-5e17-7823-9d0f-f296135ffd28"
+}

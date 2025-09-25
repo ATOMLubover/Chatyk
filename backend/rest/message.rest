@@ -1,0 +1,24 @@
+@token = eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJ1c2VyX2lkIjoiMDE5OTZjOWItNWUxNy03ODIzLTlkMGYtZjI5NjEzNWZmZDI4IiwiZXhwIjoxNzU4ODA3MDY2fQ.V_ey-0EZCsOLLMZTZQpMhlRQToz_xm-QPufojt4HmWg
+
+### send message test
+
+POST http://localhost:8080/api/channels/019971c0-27b7-7d80-bd83-ff344171f59e/messages HTTP/1.1
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "sender_id": "01996c9b-5e17-7823-9d0f-f296135ffd28",
+  "channel_id": "019971c0-27b7-7d80-bd83-ff344171f59e",
+  "content": "Another test message"
+}
+
+### get message list test
+
+GET http://localhost:8080/api/channels/019971c0-27b7-7d80-bd83-ff344171f59e/messages?limit=10&offset=0 HTTP/1.1
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "limit": 10,
+  "offset": 0
+}
