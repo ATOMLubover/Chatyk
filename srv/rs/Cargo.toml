@@ -1,0 +1,51 @@
+[workspace]
+members = ["api", "auth", "gateway", "notify", "shared"]
+resolver = "3"
+
+[workspace.dependencies]
+anyhow = "1.0.99"
+axum = { version = "0.8.4", features = [
+    "http2",
+    "macros",
+    "multipart",
+    "query",
+    "tracing",
+    "ws",
+] }
+dotenvy = "0.15.7"
+diesel = { version = "2.1.3", features = ["chrono", "postgres", "r2d2"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.143"
+thiserror = "2.0.16"
+tokio = { version = "1.47.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "rt",
+    "tracing",
+    "signal",
+    "fs",
+    "io-std",
+    "io-util",
+] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = [
+    "serde",
+    "tracing",
+    "chrono",
+    "env-filter",
+] }
+chrono = { version = "0.4.42", features = ["serde"] }
+once_cell = "1.21.3"
+bcrypt = "0.17.1"
+r2d2 = "0.8.10"
+r2d2_postgres = "0.18.2"
+axum-macros = "0.5.0"
+jsonwebtoken = "9.3.1"
+cookie = "0.18.1"
+redis = { version = "0.32.5", features = ["tokio-comp"] }
+uuid = { version = "1.18.1", features = ["v7"] }
+tokio-util = "0.7.16"
+tower-http = { version = "0.6.6", features = ["fs"] }
+dashmap = "6.1.0"
+futures = "0.3.31"
+tokio-stream = { version = "0.1.17", features = ["sync"] }
