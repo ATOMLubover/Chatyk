@@ -2,7 +2,7 @@ mod cache;
 mod dto;
 mod event;
 mod handler;
-mod msgqueue;
+mod mq;
 mod service;
 
 use std::net::SocketAddr;
@@ -17,10 +17,12 @@ use serde_json::{self};
 use tokio::net::TcpListener;
 use tokio::signal;
 
-use cache::CacheCli;
+use crate::cache::CacheCli;
+use crate::mq::MessageQueueCli;
 
 type DatabasePool = Arc<Pool<ConnectionManager<PgConnection>>>;
 type CacheClient = Arc<CacheCli>;
+type MessageQueueClient = Arc<MessageQueueCli>;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
@@ -99,10 +101,18 @@ pub fn initialize_database(config: &AppConfig) -> anyhow::Result<DatabasePool> {
     return Ok(Arc::new(pool));
 }
 
-pub async fn initialize_cache(config: &AppConfig) -> anyhow::Result<CacheClient> {
-    let cli = CacheCli::new(config.cache_url_env.clone()).await?;
+pub fn initialize_cache(config: &AppConfig) -> anyhow::Result<CacheClient> {
+    let cli = CacheCli::new(config.cache_url_env.clone())?;
 
-    tracing::debug!("Connected to Redis cache successfully");
+    tracing::debug!("Connected to cache successfully");
+
+    return Ok(Arc::new(cli));
+}
+
+pub fn initialize_msgqueue(config: &AppConfig) -> anyhow::Result<MessageQueueClient> {
+    let cli = MessageQueueCli::new(config.mq_url_env.clone())?;
+
+    tracing::debug!("Connected to MQ successfully");
 
     return Ok(Arc::new(cli));
 }
@@ -111,6 +121,7 @@ pub async fn serve(
     app_config: AppConfig,
     database: DatabasePool,
     cache: CacheClient,
+    message_queue: MessageQueueClient,
 ) -> anyhow::Result<()> {
     let addr = SocketAddr::from(([127, 0, 0, 1], app_config.port));
 
@@ -120,7 +131,7 @@ pub async fn serve(
 
     tracing::debug!("Server is now listening on {}", addr);
 
-    let app_router = handler::get_router(&app_config, &database, &cache)?;
+    let app_router = handler::get_router(&app_config, &database, &cache, &message_queue)?;
 
     axum::serve(listener, app_router.into_make_service())
         .with_graceful_shutdown(async {

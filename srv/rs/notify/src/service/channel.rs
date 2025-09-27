@@ -1,10 +1,13 @@
 use chrono::{DateTime, Utc};
-use shared::model::UserInfo;
+use futures_util::{StreamExt, stream};
+use shared::model::{NewChannelMember, UserInfo};
 
 use crate::cache::{AsyncTypedCommands, TypedCommands};
-use crate::dto::RspChannelMember;
-use crate::service::ServiceResult;
-use crate::{CacheClient, DatabasePool};
+use crate::dto::{ReqUserJoinChannel, ReqUserLeaveChannel, RspChannelMember};
+use crate::event::ServerEvent;
+use crate::handler::OnlineUsersMap;
+use crate::service::{self, ServiceError, ServiceResult};
+use crate::{CacheClient, DatabasePool, MessageQueueClient};
 
 pub async fn list_channel_members(
     pool: DatabasePool,
@@ -75,4 +78,214 @@ pub async fn list_channel_members(
         return Ok(members);
     })
     .await?;
+}
+
+pub async fn add_user_to_channel(
+    database: DatabasePool,
+    cache: CacheClient,
+    message_queue: MessageQueueClient,
+    online_users: OnlineUsersMap,
+    req: ReqUserJoinChannel,
+) -> ServiceResult<()> {
+    use diesel::prelude::*;
+    use diesel::result::DatabaseErrorKind;
+    use diesel::result::Error::DatabaseError;
+    use shared::schema::channel_member_tbl::dsl::*;
+
+    let channel_id_clone = req.channel_id.clone();
+    let user_id_clone = req.user_id.clone();
+    let database_clone = database.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let conn = &mut database_clone.get()?;
+
+        let new_member = NewChannelMember {
+            channel_id: channel_id_clone,
+            user_id: user_id_clone,
+            joined_at: Utc::now(),
+        };
+
+        match diesel::insert_into(channel_member_tbl)
+            .values(&new_member)
+            .execute(conn)
+        {
+            Ok(_) => Ok(()),
+            Err(err) => match err {
+                // FIXME: user foreign key may be violated as well, but that rarely happens
+                DatabaseError(DatabaseErrorKind::ForeignKeyViolation, _) => {
+                    Err(ServiceError::NonexistingChannel)
+                }
+                DatabaseError(DatabaseErrorKind::UniqueViolation, _) => {
+                    Err(ServiceError::UserAlreadyInChannel)
+                }
+                _ => Err(ServiceError::DatabaseError(err)),
+            },
+        }
+    })
+    .await??;
+
+    // invalidate the channel member cache
+    let cache_key = format!("channel:{}:members", &req.channel_id);
+
+    let cache_conn = &mut cache.get_async_conn().await?;
+
+    cache_conn.del(cache_key).await?;
+
+    // notify other members in the channel to refresh their member list
+    tokio::spawn(async move {
+        // broadcast to related user
+        // FIXME: the inviter user should refresh by himself after get OK response
+        let channel_members =
+            match service::list_channel_members(database, cache, req.channel_id.clone()).await {
+                Err(err) => {
+                    tracing::error!("Failed to list channel members in create_message: {}", err);
+                    return;
+                }
+                Ok(members) => members,
+            };
+
+        let event = ServerEvent::UserLeaveChannel {
+            user_id: req.user_id,
+            channel_id: req.channel_id,
+        };
+
+        // if the user is connected to this server instance, send the event directly
+        let preserved_members = stream::iter(channel_members)
+            .filter_map(|member| {
+                let online_users = online_users.clone();
+                let event = event.clone();
+
+                return async move {
+                    if let Some(tx) = online_users.get(&member.user_id) {
+                        match tx.send(event).await {
+                            Ok(_) => {
+                                return None;
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    "Failed to push event to user {}: {}",
+                                    &member.user_id,
+                                    err
+                                );
+                                return None;
+                            }
+                        }
+                    }
+
+                    return Some(member);
+                };
+            })
+            .collect::<Vec<_>>()
+            .await;
+
+        // else, we send the event to message queue for other server instances to pick up
+        if preserved_members.len() == 0 {
+            return;
+        }
+
+        if let Err(err) = super::push_message_queue(message_queue.clone(), event).await {
+            tracing::error!("Failed to push event to MQ: {}", err);
+        }
+    });
+
+    return Ok(());
+}
+
+/// `remove_user_from_channel` removes a user from a channel
+/// If the user is not in the channel, returns `ServiceError::UserNotInChannel`,
+/// but the function is idempotent
+pub async fn remove_user_from_channel(
+    database: DatabasePool,
+    cache: CacheClient,
+    message_queue: MessageQueueClient,
+    online_users: OnlineUsersMap,
+    req: ReqUserLeaveChannel,
+) -> ServiceResult<()> {
+    use diesel::prelude::*;
+    use shared::schema::channel_member_tbl::dsl::*;
+
+    let channel_id_clone = req.channel_id.clone();
+    let user_id_clone = req.user_id.clone();
+    let database_clone = database.clone();
+
+    // TODO: delete the channel if there is no member in it anymore
+    tokio::task::spawn_blocking(move || {
+        let conn = &mut database_clone.get()?;
+
+        return match diesel::delete(
+            channel_member_tbl
+                .filter(channel_id.eq(&channel_id_clone.clone()))
+                .filter(user_id.eq(&user_id_clone.clone())),
+        )
+        .execute(conn)?
+        {
+            rows if rows == 0 => Err(ServiceError::UserNotInChannel),
+            _ => Ok(()),
+        };
+    })
+    .await??;
+
+    // invalidate the channel member cache
+    let cache_key = format!("channel:{}:members", &req.channel_id);
+
+    let cache_conn = &mut cache.get_async_conn().await?;
+
+    cache_conn.del(cache_key).await?;
+
+    // notify other members in the channel to refresh their member list
+    tokio::spawn(async move {
+        let channel_members =
+            match service::list_channel_members(database, cache, req.channel_id.clone()).await {
+                Err(err) => {
+                    tracing::error!("Failed to list channel members in create_message: {}", err);
+                    return;
+                }
+                Ok(members) => members,
+            };
+
+        let event = ServerEvent::UserLeaveChannel {
+            user_id: req.user_id,
+            channel_id: req.channel_id,
+        };
+
+        // if the user is connected to this server instance, send the event directly
+        let preserved_members = stream::iter(channel_members)
+            .filter_map(|member| {
+                let online_users = online_users.clone();
+                let event = event.clone();
+
+                return async move {
+                    if let Some(tx) = online_users.get(&member.user_id) {
+                        match tx.send(event).await {
+                            Ok(_) => {
+                                return None;
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    "Failed to push event to user {}: {}",
+                                    &member.user_id,
+                                    err
+                                );
+                                return None;
+                            }
+                        }
+                    }
+
+                    return Some(member);
+                };
+            })
+            .collect::<Vec<_>>()
+            .await;
+
+        // else, we send the event to message queue for other server instances to pick up
+        if preserved_members.len() == 0 {
+            return;
+        }
+
+        if let Err(err) = super::push_message_queue(message_queue.clone(), event).await {
+            tracing::error!("Failed to push event to MQ: {}", err);
+        }
+    });
+
+    return Ok(());
 }

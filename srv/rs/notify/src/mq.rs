@@ -2,21 +2,22 @@ pub use redis::*;
 
 use anyhow::{Error, Result};
 use redis::aio::MultiplexedConnection;
-use redis::{Client, Connection, RedisError};
 
-pub type CacheError = RedisError;
+pub type MqError = RedisError;
 
-pub type CacheResult<T> = Result<T, CacheError>;
+pub type MqResult<T> = Result<T, MqError>;
 
-pub type CacheAsyncConn = MultiplexedConnection;
-pub type CacheSyncConn = Connection;
+pub type MqAsyncConn = MultiplexedConnection;
+pub type MqSyncConn = Connection;
 
+/// MessageQueueCli is now just a simple wrapper around redis::Client
+/// it does not provide any additional functionality
 #[derive(Debug)]
-pub struct CacheCli {
+pub struct MessageQueueCli {
     redis_cli: Client,
 }
 
-impl CacheCli {
+impl MessageQueueCli {
     pub fn new(env_var: String) -> Result<Self, Error> {
         let redis_url = std::env::var(env_var)
             .map_err(|err| anyhow::anyhow!("Failed to get REDIS_URL from env: {err}."))?;
@@ -42,15 +43,15 @@ impl CacheCli {
             _ => (),
         };
 
-        Ok(CacheCli { redis_cli })
+        Ok(MessageQueueCli { redis_cli })
     }
 
-    pub async fn get_async_conn(&self) -> CacheResult<CacheAsyncConn> {
+    pub async fn get_async_conn(&self) -> MqResult<MqAsyncConn> {
         let conn = self.redis_cli.get_multiplexed_async_connection().await?;
         return Ok(conn);
     }
 
-    pub fn get_sync_conn(&self) -> CacheResult<CacheSyncConn> {
+    pub fn get_sync_conn(&self) -> MqResult<MqSyncConn> {
         let conn = self.redis_cli.get_connection()?;
         return Ok(conn);
     }

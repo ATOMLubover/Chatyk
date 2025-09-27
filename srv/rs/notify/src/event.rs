@@ -25,6 +25,5 @@ pub enum ServerEvent {
     UserLeaveChannel {
         user_id: String,
         channel_id: String,
-        left_at: DateTime<Utc>,
     },
 }

@@ -8,6 +8,18 @@ pub struct ReqSendMessage {
     pub content: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct ReqUserJoinChannel {
+    pub user_id: String,
+    pub channel_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ReqUserLeaveChannel {
+    pub user_id: String,
+    pub channel_id: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RspChannelMember {
     pub user_id: String,
@@ -38,5 +50,13 @@ pub enum ClientMessage {
         channel_id: String,
         offset: usize,
         limit: usize,
+    },
+    ReqJoinChannel {
+        user_id: String,
+        channel_id: String,
+    },
+    ReqLeaveChannel {
+        user_id: String,
+        channel_id: String,
     },
 }

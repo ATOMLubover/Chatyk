@@ -8,29 +8,36 @@ pub use message::*;
 
 use thiserror::Error;
 
+use crate::MessageQueueClient;
+use crate::cache;
 use crate::cache::AsyncTypedCommands;
 use crate::cache::CacheAsyncConn;
+use crate::event::ServerEvent;
 
 pub type ServiceResult<T> = Result<T, ServiceError>;
 
 #[derive(Debug, Error)]
 pub enum ServiceError {
+    #[error("User is already in the channel")]
+    UserAlreadyInChannel,
+    #[error("User is not in the channel")]
+    UserNotInChannel,
+    #[error("Channel does not exist")]
+    NonexistingChannel,
     #[error("Close websocket normally")]
     CloseWebsocket,
+    #[error("Invalid message format")]
+    InvalidMessage,
     #[error("Axum error: {0}")]
     AxumError(#[from] axum::Error),
-    #[error("Cache error: {0}")]
-    CacheError(#[from] crate::cache::CacheError),
+    #[error("Redis error: {0}")]
+    RedisError(#[from] redis::RedisError),
     #[error("Serialization error: {0}")]
     SerdeJsonError(#[from] serde_json::Error),
     #[error("Blocking join error: {0}")]
     BlockingJoinError(#[from] tokio::task::JoinError),
-    #[error("Std IO error: {0}")]
-    StdIoError(#[from] std::io::Error),
-    #[error("Multipart resource upload error: {0}")]
-    ResourceMultipartError(#[from] axum::extract::multipart::MultipartError),
     #[error("Database pool error: {0}")]
-    DbPoolError(#[from] r2d2::Error),
+    DatabasePoolError(#[from] r2d2::Error),
     #[error("Database error: {0}")]
     DatabaseError(#[from] diesel::result::Error),
 }
@@ -65,10 +72,25 @@ async fn unlock_channel_message_cache(
     "#;
 
     // FIXME: what if invoke_async fails?
-    redis::Script::new(script)
+    cache::Script::new(script)
         .key(key)
         .arg(val)
         .invoke_async::<()>(conn)
+        .await?;
+
+    return Ok(());
+}
+
+async fn push_message_queue(
+    message_queue: MessageQueueClient,
+    event: ServerEvent,
+) -> ServiceResult<()> {
+    let payload = serde_json::to_string(&event)?;
+
+    let mq_conn = &mut message_queue.get_async_conn().await?;
+
+    mq_conn
+        .xadd("chatyk:event_queue", "*", &[("payload", &payload)])
         .await?;
 
     return Ok(());

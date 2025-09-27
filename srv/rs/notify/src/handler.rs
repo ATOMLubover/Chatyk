@@ -17,11 +17,11 @@ use futures_util::stream::StreamExt;
 use jsonwebtoken::DecodingKey;
 use serde::Deserialize;
 use shared::util::{self};
-use tokio::sync::broadcast::{self, Sender};
+use tokio::sync::mpsc::{self, Sender};
 
 use crate::event::ServerEvent;
 use crate::service::{self};
-use crate::{AppConfig, CacheClient, DatabasePool};
+use crate::{AppConfig, CacheClient, DatabasePool, MessageQueueClient, mq};
 
 pub type OnlineUsersMap = Arc<DashMap<String, Sender<ServerEvent>>>;
 
@@ -30,6 +30,7 @@ pub struct AppState {
     online_users: OnlineUsersMap,
     database_pool: DatabasePool,
     cache_client: CacheClient,
+    message_queue_client: MessageQueueClient,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -41,6 +42,7 @@ pub fn get_router(
     config: &AppConfig,
     database: &DatabasePool,
     cache: &CacheClient,
+    message_queue: &MessageQueueClient,
 ) -> anyhow::Result<Router> {
     let jwt_decoding_key = std::env::var(&config.jwt_deckey_env)
         .map_err(|err| anyhow::anyhow!("JWT decoding key env not set: {}", err))?;
@@ -59,6 +61,7 @@ pub fn get_router(
             online_users: Arc::new(DashMap::new()),
             database_pool: Arc::clone(database),
             cache_client: Arc::clone(cache),
+            message_queue_client: Arc::clone(message_queue),
         });
 
     let router = Router::new().nest("/api", event_router);
@@ -127,16 +130,18 @@ pub async fn exchange_events(
         // process websocket messages after ping-pong handshake
         let (mut sender, mut receiver) = socket.split();
 
-        let mut rx = state_clone
+        let (tx, mut rx) = mpsc::channel(64);
+
+        state_clone
             .online_users
             .entry(user_id.clone())
-            .or_insert_with(|| broadcast::channel(64).0)
-            .subscribe();
+            .or_insert_with(|| tx);
 
         let user_id_clone = user_id.clone();
 
+        // task to send messages to client
         let mut send_task = tokio::task::spawn(async move {
-            while let Ok(event) = rx.recv().await {
+            while let Some(event) = rx.recv().await {
                 if let Err(err) = service::handle_notified_event(event, &mut sender).await {
                     tracing::debug!(
                         "Failed to process event for user_id {}: {:?}",
@@ -157,10 +162,72 @@ pub async fn exchange_events(
         });
 
         let user_id_clone = user_id.clone();
+        let database_clone = state_clone.database_pool.clone();
+        let cache_clone = state_clone.cache_client.clone();
+        let online_users_clone = state_clone.online_users.clone();
+        let mq_clone = state_clone.message_queue_client.clone();
+
+        // task to pull messages from MQ and send to client
+        // TODO: use consistency hash to perform sharding
+        let mut pull_task = tokio::task::spawn(async move {
+            use mq::AsyncTypedCommands;
+            use mq::streams::StreamReadOptions;
+
+            // block indefinitely
+            let opt = StreamReadOptions::default().count(64).block(0);
+
+            let mq_conn = &mut match mq_clone.get_async_conn().await {
+                Err(err) => {
+                    tracing::error!("Failed to get MQ connection: {:?}", err);
+                    return;
+                }
+                Ok(conn) => conn,
+            };
+
+            let mut last_id = "$".to_string();
+
+            loop {
+                // always read from the latest message
+                let reply = match mq_conn
+                    .xread_options(&["chatyk:event_queue"], &[&last_id], &opt)
+                    .await
+                {
+                    Err(err) => {
+                        tracing::error!("Failed to read from MQ: {:?}", err);
+                        break;
+                    }
+                    Ok(None) => continue, // though it is blocking, but may return None somehow
+                    Ok(Some(reply)) => reply,
+                };
+
+                if let Err(err) = service::handle_pulled_reply(
+                    database_clone.clone(),
+                    cache_clone.clone(),
+                    online_users_clone.clone(),
+                    reply,
+                    &mut last_id,
+                )
+                .await
+                {
+                    tracing::error!(
+                        "Failed to process MQ reply for user_id {}: {:?}",
+                        &user_id_clone,
+                        err
+                    );
+                    break;
+                }
+            }
+
+            tracing::debug!("MQ pull task ended for user_id: {}", &user_id_clone);
+        });
+
+        let user_id_clone = user_id.clone();
         let online_users_clone = state_clone.online_users.clone();
         let pool_clone = state_clone.database_pool.clone();
         let cache_clone = state_clone.cache_client.clone();
+        let mq_clone = state_clone.message_queue_client.clone();
 
+        // task to receive messages from client
         let mut recv_task = tokio::task::spawn(async move {
             while let Some(Ok(message)) = receiver.next().await {
                 if let Err(err) = service::handle_recv_message(
@@ -169,6 +236,7 @@ pub async fn exchange_events(
                     online_users_clone.clone(),
                     pool_clone.clone(),
                     cache_clone.clone(),
+                    mq_clone.clone(),
                 )
                 .await
                 {
@@ -177,7 +245,6 @@ pub async fn exchange_events(
                         &user_id_clone,
                         err
                     );
-
                     break;
                 }
             }
@@ -195,12 +262,21 @@ pub async fn exchange_events(
                     tracing::debug!("Send task error for user_id {}: {:?}", &user_id, err);
                 }
                 recv_task.abort();
+                pull_task.abort();
             },
             rv_b = (&mut recv_task) => {
                 if let Err(err) = rv_b {
                     tracing::debug!("Receive task error for user_id {}: {:?}", &user_id, err);
                 }
                 send_task.abort();
+                pull_task.abort();
+            }
+            rv_c = (&mut pull_task) => {
+                if let Err(err) = rv_c {
+                    tracing::debug!("MQ Pull task error for user_id {}: {:?}", &user_id, err);
+                }
+                send_task.abort();
+                recv_task.abort();
             }
         }
 

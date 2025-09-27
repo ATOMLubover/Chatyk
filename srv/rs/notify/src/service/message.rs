@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use chrono::Utc;
+use futures_util::{StreamExt, stream};
 use shared::model::NewMessage;
 use shared::util;
 
@@ -8,12 +9,13 @@ use crate::cache::{AsyncTypedCommands, TypedCommands};
 use crate::dto::{ReqSendMessage, RspMessage};
 use crate::event::ServerEvent;
 use crate::handler::OnlineUsersMap;
-use crate::service::{self, ServiceError, ServiceResult, channel};
-use crate::{CacheClient, DatabasePool};
+use crate::service::{self, ServiceError, ServiceResult};
+use crate::{CacheClient, DatabasePool, MessageQueueClient};
 
 pub async fn create_message(
     pool: DatabasePool,
     cache: CacheClient,
+    message_queue: MessageQueueClient,
     online_users: OnlineUsersMap,
     req: ReqSendMessage,
 ) -> ServiceResult<()> {
@@ -66,8 +68,8 @@ pub async fn create_message(
 
     // notify online users in the channel in background
     tokio::spawn(async move {
-        let mut channel_members =
-            match channel::list_channel_members(pool_clone, cache_clone.clone(), req.channel_id)
+        let channel_members =
+            match service::list_channel_members(pool_clone, cache_clone.clone(), req.channel_id)
                 .await
             {
                 Err(err) => {
@@ -77,7 +79,7 @@ pub async fn create_message(
                 Ok(members) => members,
             };
 
-        let ev = ServerEvent::SpawnMessage {
+        let event = ServerEvent::SpawnMessage {
             sender_id: new_message_clone.sender_id,
             channel_id: new_message_clone.channel_id,
             content: new_message_clone.content,
@@ -85,54 +87,42 @@ pub async fn create_message(
         };
 
         // if the user is connected to this server instance, send the event directly
-        channel_members.retain(|member| {
-            if let Some(tx) = online_users.get(&member.user_id) {
-                if let Err(err) = tx.send(ev.clone()) {
-                    // FIXME: we do not retry as now, just log the error
-                    tracing::error!("Failed to push event to user {}: {}", &member.user_id, err);
-                }
-                return true;
-            }
-            // as long as the user is not connected to this server instance, we consider it offline
-            return false;
-        });
+        let preserved_members = stream::iter(channel_members)
+            .filter_map(|member| {
+                let online_users = online_users.clone();
+                let event = event.clone();
+
+                return async move {
+                    if let Some(tx) = online_users.get(&member.user_id) {
+                        match tx.send(event).await {
+                            Ok(_) => {
+                                return None;
+                            }
+                            Err(err) => {
+                                tracing::error!(
+                                    "Failed to push event to user {}: {}",
+                                    &member.user_id,
+                                    err
+                                );
+                                return None;
+                            }
+                        }
+                    }
+
+                    return Some(member);
+                };
+            })
+            .collect::<Vec<_>>()
+            .await;
 
         // else, we send the event to message queue for other server instances to pick up
-        if channel_members.len() == 0 {
+        if preserved_members.len() == 0 {
             return;
         }
 
-        let payload = match serde_json::to_string(&ev) {
-            Err(err) => {
-                tracing::error!("Failed to serialize event when pushing MQ: {}", err);
-                return;
-            }
-            Ok(payload) => payload,
-        };
-
-        let cache_conn = &mut match cache_clone.get_async_conn().await {
-            Err(err) => {
-                tracing::error!(
-                    "Failed to get async cache connection when pushing MQ: {}",
-                    err
-                );
-                return;
-            }
-            Ok(conn) => conn,
-        };
-
-        // FIXME: this is a crucial operation, we need to retry a few times if failed
-        match cache_conn
-            .xadd("event_queue", "*", &[("payload", &payload)])
-            .await
-        {
-            Err(err) => {
-                tracing::error!("Failed to push event to message queue: {}", err);
-            }
-            Ok(_) => {
-                tracing::debug!("Pushed event to message queue successfully");
-            }
-        };
+        if let Err(err) = super::push_message_queue(message_queue, event).await {
+            tracing::error!("Failed to push event to message queue: {}", err);
+        }
     });
 
     return Ok(());
