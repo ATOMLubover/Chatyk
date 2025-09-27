@@ -16,13 +16,14 @@ use futures_util::SinkExt;
 use futures_util::stream::StreamExt;
 use jsonwebtoken::DecodingKey;
 use serde::Deserialize;
-use shared::event::Event;
 use shared::util::{self};
 use tokio::sync::broadcast::{self, Sender};
 
+use crate::event::ServerEvent;
+use crate::service::{self};
 use crate::{AppConfig, CacheClient, DatabasePool};
 
-type OnlineUsersMap = Arc<DashMap<String, Sender<Event>>>;
+pub type OnlineUsersMap = Arc<DashMap<String, Sender<ServerEvent>>>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -60,7 +61,7 @@ pub fn get_router(
             cache_client: Arc::clone(cache),
         });
 
-    let router = Router::new();
+    let router = Router::new().nest("/api", event_router);
 
     return Ok(router);
 }
@@ -135,53 +136,56 @@ pub async fn exchange_events(
         let user_id_clone = user_id.clone();
 
         let mut send_task = tokio::task::spawn(async move {
-            while let Ok(ev) = rx.recv().await {
-                match ev {
-                    Event::MessageBroadcast {
-                        from_user_id,
-                        to_user_id,
-                        message_id,
-                        content,
-                        created_at,
-                    } => {
-                        // TODO:
-                    }
-                    Event::UserJoinChannel {
-                        user_id,
-                        channel_id,
-                        joined_at,
-                    } => {
-                        // TODO
-                    }
-                    Event::UserLeaveChannel {
-                        user_id,
-                        channel_id,
-                        left_at,
-                    } => {
-                        // TODO
-                    }
+            while let Ok(event) = rx.recv().await {
+                if let Err(err) = service::handle_notified_event(event, &mut sender).await {
+                    tracing::debug!(
+                        "Failed to process event for user_id {}: {:?}",
+                        &user_id_clone,
+                        err
+                    );
+
+                    break;
                 }
             }
 
-            // when rx is closed, close the websocket
+            // when rx is closed, or some error occurs, close the websocket
             if let Err(err) = sender.send(Message::Close(None)).await {
                 tracing::debug!("Failed to send close message to client: {:?}", err);
+            }
+
+            tracing::debug!("WebSocket send loop ended for user_id: {}", &user_id_clone);
+        });
+
+        let user_id_clone = user_id.clone();
+        let online_users_clone = state_clone.online_users.clone();
+        let pool_clone = state_clone.database_pool.clone();
+        let cache_clone = state_clone.cache_client.clone();
+
+        let mut recv_task = tokio::task::spawn(async move {
+            while let Some(Ok(message)) = receiver.next().await {
+                if let Err(err) = service::handle_recv_message(
+                    user_id_clone.clone(),
+                    message,
+                    online_users_clone.clone(),
+                    pool_clone.clone(),
+                    cache_clone.clone(),
+                )
+                .await
+                {
+                    tracing::debug!(
+                        "Error occurred when processing received message for user_id {}: {:?}",
+                        &user_id_clone,
+                        err
+                    );
+
+                    break;
+                }
             }
 
             tracing::debug!(
                 "WebSocket receive loop ended for user_id: {}",
                 &user_id_clone
             );
-        });
-
-        let user_id_clone = user_id.clone();
-
-        let mut recv_task = tokio::task::spawn(async move {
-            while let Some(Ok(msg)) = receiver.next().await {
-                // TODO
-            }
-
-            tracing::debug!("WebSocket send loop ended for user_id: {}", &user_id_clone);
         });
 
         // if any one of the tasks exit, abort the other

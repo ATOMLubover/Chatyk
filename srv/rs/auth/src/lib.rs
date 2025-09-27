@@ -1,8 +1,8 @@
 mod dto;
 mod handler;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::{net::SocketAddr, ops::Deref};
 
 use anyhow;
 use diesel::{PgConnection, r2d2::ConnectionManager};
@@ -14,25 +14,12 @@ use tokio::signal;
 
 pub type DatabasePool = Arc<Pool<ConnectionManager<PgConnection>>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
-    inner: Arc<AppConfigInner>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AppConfigInner {
     pub port: u16,
     pub jwt_enckey_env: String,
     pub jwt_deckey_env: String,
     pub database_url_env: String,
-}
-
-impl Deref for AppConfig {
-    type Target = AppConfigInner;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
 }
 
 impl AppConfig {
@@ -43,7 +30,7 @@ impl AppConfig {
             .ok_or_else(|| anyhow::anyhow!("Failed to get parent directory of current exe"))?
             .to_path_buf();
 
-        let config_path_buf = curr_dir_buf.join("app_config.json");
+        let config_path_buf = curr_dir_buf.join("auth_config.json");
 
         let config_path = config_path_buf.to_str().ok_or_else(|| {
             anyhow::anyhow!(
@@ -55,12 +42,10 @@ impl AppConfig {
         let config_str = std::fs::read_to_string(config_path)
             .map_err(|err| anyhow::anyhow!("Failed to read config file: {}", err))?;
 
-        let inner: AppConfigInner = serde_json::from_str(&config_str)
+        let config: AppConfig = serde_json::from_str(&config_str)
             .map_err(|err| anyhow::anyhow!("Failed to parse config file: {}", err))?;
 
-        return Ok(AppConfig {
-            inner: Arc::new(inner),
-        });
+        return Ok(config);
     }
 }
 

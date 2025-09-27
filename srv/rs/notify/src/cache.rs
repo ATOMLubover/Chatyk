@@ -1,20 +1,10 @@
 pub use redis::*;
 
 use anyhow::{Error, Result};
-use redis::{Client, Connection, RedisError, aio::MultiplexedConnection};
-use thiserror::Error;
+use redis::aio::MultiplexedConnection;
+use redis::{Client, Connection, RedisError};
 
-#[derive(Debug, Error)]
-pub enum CacheError {
-    #[error("Redis error: {0}")]
-    RedisError(#[from] RedisError),
-
-    #[error("Serialization error: {0}")]
-    SerializationError(#[from] serde_json::Error),
-
-    #[error("Unknown error: {0}")]
-    UnknownError(String),
-}
+pub type CacheError = RedisError;
 
 pub type CacheResult<T> = Result<T, CacheError>;
 
